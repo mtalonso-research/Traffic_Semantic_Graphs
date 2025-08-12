@@ -18,12 +18,12 @@ from huggingface_hub import hf_hub_download
 from rfdetr import RFDETRBase
 from rfdetr.util.coco_classes import COCO_CLASSES
 
-camera_trackers = {}
-last_detections_cache = {}
 CAMERA_CONFIG = {
     "fps": 10,  # Assume 10 FPS for L2D dataset (adjust based on actual FPS)
     "time_step": 2,  # From processing_images_view.py - frames are extracted with time_step=2
 }
+camera_trackers = {}
+last_detections_cache = {}
 
 def quick_setup_depth_pro(verbose):
     """Quick setup function to download Depth Pro model"""
@@ -761,7 +761,7 @@ def process_frame_with_depth_and_speed(
     run_dict=None,
 ):
     if run_dict is None:
-        run_dict = {"detection": True, "depth": True, "speed": True}
+        run_dict = {"detection": True, "depth": True, "speed": True, "overwrite": False}
 
     image = cv2.imread(frame_path)
     if image is None:
@@ -774,6 +774,45 @@ def process_frame_with_depth_and_speed(
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(json_dir, exist_ok=True)
 
+    json_path = os.path.join(json_dir, os.path.splitext(os.path.basename(frame_path))[0] + '.json')
+    overwrite = run_dict.get("overwrite", False)
+
+    # Load existing JSON if not overwriting
+    if not overwrite and os.path.exists(json_path):
+        with open(json_path, 'r') as f:
+            json_data = json.load(f)
+    else:
+        json_data = {
+            "info": {"description": "L2D Dataset Detection Results", "date_created": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            "images": [{
+                "id": 1,
+                "file_name": os.path.basename(frame_path),
+                "width": image.shape[1],
+                "height": image.shape[0],
+                "camera": camera_name,
+                "has_depth": False
+            }],
+            "annotations": [],
+            "categories": [
+                {"id": 1, "name": "vehicle", "supercategory": "traffic"},
+                {"id": 2, "name": "pedestrian", "supercategory": "traffic"}
+            ],
+            # [LABEL MAP] keep a home for persistent labels
+            "meta": {"id_label_map": {}}
+        }
+
+    # Safety: ensure meta/id_label_map exists
+    if "meta" not in json_data:
+        json_data["meta"] = {}
+    if "id_label_map" not in json_data["meta"]:
+        json_data["meta"]["id_label_map"] = {}
+
+    # Build map of existing annotations by track_id (label)
+    existing_annots_by_track = {a['track_id']: a for a in json_data.get('annotations', [])}
+
+    # -----------------
+    # Depth phase (compute map if requested)
+    # -----------------
     depth_map, depth_colormap = None, None
     if run_dict.get("depth", True) and DEPTH_PRO_AVAILABLE and depth_model is not None:
         depth_map, depth_colormap = estimate_depth(image, depth_model, depth_transform, depth_device)
@@ -783,23 +822,7 @@ def process_frame_with_depth_and_speed(
         os.makedirs(depth_colormap_dir, exist_ok=True)
         np.save(os.path.join(depth_dir, os.path.splitext(os.path.basename(frame_path))[0] + '_depth.npy'), depth_map)
         cv2.imwrite(os.path.join(depth_colormap_dir, os.path.splitext(os.path.basename(frame_path))[0] + '_depth_colormap.jpg'), depth_colormap)
-
-    json_data = {
-        "info": {"description": "L2D Dataset Detection Results", "date_created": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
-        "images": [{
-            "id": 1,
-            "file_name": os.path.basename(frame_path),
-            "width": image.shape[1],
-            "height": image.shape[0],
-            "camera": camera_name,
-            "has_depth": depth_map is not None
-        }],
-        "annotations": [],
-        "categories": [
-            {"id": 1, "name": "vehicle", "supercategory": "traffic"},
-            {"id": 2, "name": "pedestrian", "supercategory": "traffic"}
-        ]
-    }
+        json_data["images"][0]["has_depth"] = True
 
     current_detections = {}
 
@@ -808,16 +831,11 @@ def process_frame_with_depth_and_speed(
     # -----------------
     if run_dict.get("detection", True):
         try:
-            # Run RF-DETR detection
             detection_results = rfdetr_detect_objects(model, image, confidence_threshold=0.4)
-
-            # Map detections to target classes
             mapped_detections = map_rfdetr_to_target_classes(detection_results, target_classes)
 
-            # Store results with depth info if available
             for track_id, (bbox, cls_name) in mapped_detections.items():
-                depth_stats = extract_depth_from_bbox(depth_map, bbox) if depth_map is not None else None
-                current_detections[track_id] = (bbox, cls_name, depth_stats)
+                current_detections[track_id] = (bbox, cls_name, None)  # depth filled later if available
 
             last_detections_cache[camera_name] = current_detections.copy()
 
@@ -825,8 +843,26 @@ def process_frame_with_depth_and_speed(
             print(f"Error processing RF-DETR detection for {frame_path}: {e}")
 
     else:
-        # Use last known detections if available
-        current_detections = last_detections_cache.get(camera_name, {})
+        # Use saved annotations to reconstruct detections (preserve labels)
+        try:
+            with open(json_path, "r") as f:
+                saved = json.load(f)
+            for ann in saved.get("annotations", []):
+                x, y, w, h = ann["bbox"]
+                bbox = [x, y, x + w, y + h]
+                cls = ann["attributes"].get("class", "unknown")
+                depth_stats = ann["attributes"].get("depth_stats", None)
+                # IMPORTANT: use the saved label as the key (stable across runs)
+                current_detections[ann["track_id"]] = (bbox, cls, depth_stats)
+        except Exception as e:
+            print(f"[ERROR] Could not load detections from JSON for {frame_path}: {e}")
+            return
+
+    # Fill/refresh depth_stats if we computed a new depth map this pass
+    if depth_map is not None:
+        for tid in current_detections:
+            bbox, cls = current_detections[tid][0], current_detections[tid][1]
+            current_detections[tid] = (bbox, cls, extract_depth_from_bbox(depth_map, bbox))
 
     # -----------------
     # Speed tracking phase
@@ -835,6 +871,18 @@ def process_frame_with_depth_and_speed(
         if camera_name not in camera_trackers:
             camera_trackers[camera_name] = EnhancedRobustTracker(camera_name)
         tracker = camera_trackers[camera_name]
+
+        # [LABEL MAP] Pre-seed labels when detection is OFF, so we never fall back to "IDx"
+        if not run_dict.get("detection", True):
+            # Load any saved label map and merge it into the tracker
+            saved_map = json_data.get("meta", {}).get("id_label_map", {})
+            if isinstance(saved_map, dict):
+                tracker.id_label_map.update(saved_map)
+            # Ensure each current detection key is recognized as its own label (no re-assignment)
+            for tid in current_detections.keys():
+                if tid not in tracker.id_label_map:
+                    tracker.id_label_map[tid] = tid  # label equals the saved track_id string
+
         if current_detections:
             tracker.update(image, current_detections, vehicle_classes)
     else:
@@ -843,38 +891,67 @@ def process_frame_with_depth_and_speed(
     # -----------------
     # Annotate image & JSON
     # -----------------
-    annotation_id = 1
+    annotation_id = max([a["id"] for a in json_data.get("annotations", [])], default=0) + 1
+
     for track_id, (box, cls_name, depth_stats) in current_detections.items():
         x1, y1, x2, y2 = box
-        label = f"ID{track_id}"
+
+        # [LABEL MAP] unified label selection
+        # - If detection is off: track_id is already the persisted label
+        # - If detection is on: pull from tracker's label map, or fallback to ID{track_id}
+        if not run_dict.get("detection", True):
+            label = track_id
+        else:
+            if camera_name in camera_trackers and track_id in camera_trackers[camera_name].id_label_map:
+                label = camera_trackers[camera_name].id_label_map[track_id]
+            else:
+                label = f"ID{track_id}"
 
         speed_info = None
         if run_dict.get("speed", True) and tracker:
             track_data = tracker.track_history.get(track_id, {})
             if 'speeds' in track_data and len(track_data['speeds']) > 0:
                 speed_info = track_data['speeds'][-1]
-                label += f" {speed_info['speed_kmh']:.1f}km/h"
 
+        # Draw overlays
         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-        json_data["annotations"].append({
-            "id": annotation_id,
-            "image_id": 1,
-            "category_id": 1 if cls_name in vehicle_classes else 2,
-            "track_id": label,
-            "bbox": [x1, y1, x2 - x1, y2 - y1],
-            "attributes": {
-                "class": cls_name,
-                "depth_stats": depth_stats,
-                "speed_info": speed_info
-            }
-        })
-        annotation_id += 1
+        if label in existing_annots_by_track:
+            # Only update fields for modules that are ON
+            if run_dict.get("detection", True):
+                existing_annots_by_track[label]["bbox"] = [x1, y1, x2 - x1, y2 - y1]
+                existing_annots_by_track[label]["attributes"]["class"] = cls_name
+            existing_annots_by_track[label].setdefault("attributes", {})
+            if run_dict.get("depth", True):
+                existing_annots_by_track[label]["attributes"]["depth_stats"] = depth_stats
+            if run_dict.get("speed", True):
+                existing_annots_by_track[label]["attributes"]["speed_info"] = speed_info
+        else:
+            if run_dict.get("detection", True):
+                json_data["annotations"].append({
+                    "id": annotation_id,
+                    "image_id": 1,
+                    "category_id": 1 if cls_name in vehicle_classes else 2,
+                    "track_id": label,
+                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "attributes": {
+                        "class": cls_name,
+                        "depth_stats": depth_stats if run_dict.get("depth", True) else None,
+                        "speed_info": speed_info if run_dict.get("speed", True) else None
+                    }
+                })
+                annotation_id += 1
+            else:
+                # No detection this pass and label wasn't found — do not create new entries
+                pass
+
+    # [LABEL MAP] Persist the current tracker label map back into JSON for future modular passes
+    if run_dict.get("speed", True) and tracker:
+        json_data["meta"]["id_label_map"] = tracker.id_label_map
 
     # Save results
     cv2.imwrite(os.path.join(output_dir, os.path.basename(frame_path)), image)
-    json_path = os.path.join(json_dir, os.path.splitext(os.path.basename(frame_path))[0] + '.json')
     with open(json_path, 'w') as f:
         json.dump(convert_numpy_types(json_data), f, indent=2)
 
@@ -885,6 +962,7 @@ def process_frame_with_depth_and_speed(
         "json": json_path,
         "has_depth": depth_map is not None
     }
+
 
 def convert_numpy_types(obj):
     """Convert numpy types to Python native types for JSON serialization"""
@@ -918,7 +996,6 @@ def process_episode_frames_with_depth_and_speed(
     target_classes,
     run_dict=None,
     depth_available=False,
-    camera_trackers=None
 ):
     if run_dict is None:
         run_dict = {"detection": True, "depth": True, "speed": True}
@@ -930,6 +1007,18 @@ def process_episode_frames_with_depth_and_speed(
     if not os.path.exists(episode_dir):
         print(f"⚠️ Episode folder not found: {episode_dir}")
         return results
+    
+    global camera_trackers, last_detections_cache  # <- important
+
+    # Defensive re-init in case something set them to None elsewhere
+    if not isinstance(camera_trackers, dict):
+        camera_trackers = {}
+    if not isinstance(last_detections_cache, dict):
+        last_detections_cache = {}
+
+    # Reset ONCE per episode/run (not per frame)
+    camera_trackers.clear()
+    last_detections_cache.clear()
 
     for camera in camera_views:
         camera_frames_dir = os.path.join(episode_dir, camera)

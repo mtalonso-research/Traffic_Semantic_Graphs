@@ -179,8 +179,62 @@ def preprocess_df_columns(df):
     return df, do
 
 #===============================================================
-#         NEED TO ADD TURNING BEHAVIOR FUNCTION HERE
+#         NEED TO EDIT TURNING BEHAVIOR FUNCTION HERE
 #===============================================================
+def classify_turning_with_lane_change(angle_sum, turn_signal):
+    if pd.isna(angle_sum) and (pd.isna(turn_signal) or turn_signal == "none"):
+        return "unknown"
+
+    # LANE CHANGE detection (signal + small angle + decent speed)
+    if 3 <= abs(angle_sum) <= 30:
+        if turn_signal == 1:
+            return "lane change left"
+        elif turn_signal == 2:
+            return "lane change right"
+
+    # TURN classification
+    if -30 <= angle_sum <= 30:
+        angle_label = "straight"
+    elif 30 < angle_sum <= 135:
+        angle_label = "turning right"
+    elif angle_sum > 135:
+        angle_label = "u-turn right"
+    elif -135 <= angle_sum < -30:
+        angle_label = "turning left"
+    elif angle_sum < -135:
+        angle_label = "u-turn left"
+    else:
+        angle_label = "unknown"
+
+    # Signal-based override or inconsistency
+    #if turn_signal == 1:
+    #    if "right" in angle_label:
+    #        return "inconsistent (left signal, right turn)"
+    #    elif angle_label in ["straight", "unknown"]:
+    #        return "turning left (signal)"
+    #elif turn_signal == 2:
+    #    if "left" in angle_label:
+    #        return "inconsistent (right signal, left turn)"
+    #    elif angle_label in ["straight", "unknown"]:
+    #        return "turning right (signal)"
+    
+    return angle_label
+def compute_turning_behavior_with_lane_change(df, angle_col='angle_change', signal_col='action_turn_signal'):
+    # Normalize angle
+    df['norm_angle'] = df[angle_col] * 180
+
+    # Apply classifier
+    df['turning_behavior'] = df.apply(
+        lambda row: classify_turning_with_lane_change(
+            row['norm_angle'],
+            row.get(signal_col, None),
+        ),
+        axis=1
+    )
+    df.drop(columns=['norm_angle'],inplace=True)
+
+    return df
+
 
 def process_tabular_data(min_ep,max_ep=-1,n_sec=3,
                          source_dir='../data/raw/L2D/tabular',
@@ -207,7 +261,7 @@ def process_tabular_data(min_ep,max_ep=-1,n_sec=3,
                 df = pd.read_parquet(source_parquet, engine="pyarrow").astype("object")
                 if process_columns: df, do = preprocess_df_columns(df)
                 if process_osm: df = enrich_dataframe_with_osm_tags(df, 'vehicle_latitude', 'vehicle_longitude', verbose=False)
-                if process_turning: df = compute_turning_behavior(df)
+                if process_turning: df = compute_turning_behavior_with_lane_change(df, angle_col='action_steering_angle', signal_col='action_turn_signal')
 
                 # Save processed data
                 os.makedirs(os.path.dirname(output_parquet), exist_ok=True)
