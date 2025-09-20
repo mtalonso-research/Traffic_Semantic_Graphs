@@ -31,8 +31,7 @@ TRAFFIC_SEMANTIC_GRAPHS/
 │   ├── 1-graph-generation-l2d.ipynb
 │   ├── 2-graph-generation-nuplan.ipynb
 │   ├── 3-dataset-alignment.ipynb
-│   ├── 4-ue-encoder.ipynb
-│   ├── nuplan.ipynb
+│   └── 4-ue-encoder.ipynb
 │
 ├── requirements.txt                 # Python dependencies
 └── README.md                        # This file
