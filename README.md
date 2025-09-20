@@ -37,4 +37,4 @@ TRAFFIC_SEMANTIC_GRAPHS/
 └── README.md                        # This file
 
 ```
-**Note:** The actual data files are not included in the repository due to storage limitations, but steps for downloading and processing the data are included in ```graph-generation.ipynb```.
+**Note:** The actual data files are not included in the repository due to storage limitations.
