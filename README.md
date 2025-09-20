@@ -4,19 +4,25 @@
 
 - **Phase 1: Graph Generation**
   - ✅ Data processing and graph generation pipeline is fully functional.
-  - ✅ Speed extraction and processing are complete.
-  - 🔄 Currently integrating speed as a node feature across all graphs.
-  - 🛠️ Lane detection function is under development.
+  - ✅ Speed detection output is integrated as a node feature for all vehicles. 
+  - ✅ Balanced subset of the dataset (with respect to vehicle action) is ready.
+  - ✅ The graphs for the two datasets have been standardized to follow the same structure.
+  - 🔄 Currently integrating lane detection output as a node feature across all graphs.
 
 - **Phase 2: Baseline Models**
   - ✅ Data loader for pytorch geometric HeteroData is complete.
+  - ✅ Graphs for both datasets are effectively stored as PyG HeteroData objects
   - ✅ Initial experiments conducted using PyTorch Geometric with heterogeneous graphs and a basic MLP for downstream tasks.
+  - 🔍 Currently in progress: brainstorming what to do as a downstream task.
+     - Needs to work for both datasets.
+     - Needs to use information from several nodes (next action or next coordinate tasks only require ego vehicle information).
   - ⏳ Still pending:
     - Incorporation of camera data.
     - Improvements to the model architecture and training pipeline.
 
 - **Phase 3: Knowledge Distillation**
   - 🔍 Currently in progress: graph matching mechanism to align similar traffic scenes across two datasets.
+     - Focusing on clustering and graph classification at the moment.
 
 
 ## 📁 Directory Overview
