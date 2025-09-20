@@ -3,7 +3,7 @@ import json
 import warnings
 from tqdm import tqdm
 import os
-from functions.utils_L2D import load_and_restore_parquet
+from functions.utils import load_and_restore_parquet
 
 def filter_compensating_turns(turns):
     filtered = []
@@ -292,29 +292,35 @@ def add_data_tags(min_ep,max_ep=-1,
                   data_dir='../data/processed/L2D',
                   tags_dir='../data/semantic_tags/L2D'):
 
-    if max_ep == -1: max_ep = min_ep + 1
+    if not isinstance(min_ep, list):
+        if max_ep == -1: 
+            max_ep = min_ep + 1
+        iterable = range(min_ep,max_ep)
+    else:
+        iterable = min_ep
+
     with warnings.catch_warnings():
         warnings.simplefilter(action='ignore', category=UserWarning)
-        for ep_num in tqdm(range(min_ep, max_ep)):
+        for ep_num in tqdm(iterable):
 
             data_parquet = os.path.join(data_dir,f"episode_{ep_num:06d}.parquet")
-            output_json = os.path.join(tags_dir,f"episode_{ep_num:06d}.json")
+            output_json = os.path.join(tags_dir,f"{ep_num}_graph.json")
 
-            try:
-                df = load_and_restore_parquet(data_parquet)
-                with open(output_json, 'r') as f:
-                    do = json.load(f)
+            #try:
+            df = load_and_restore_parquet(data_parquet)
+            with open(output_json, 'r') as f:
+                do = json.load(f)
 
-                try: do['action_tag'] = assign_action_tag(df)
-                except: do['action_tag'] = 'none'
-                try: do['traffic_control_tag'] = assign_traffic_control_tag(df)
-                except: do['traffic_control_tag'] = 'none'
-                try: do['road_feature_tags'] = assign_road_features(df)
-                except: do['road_feature_tags'] = []
-                try: do['environment_tags'] = assign_environmental_tags(df)
-                except: do['environment_tags'] = []
+            try: do['action_tag'] = assign_action_tag(df)
+            except: do['action_tag'] = 'none'
+            try: do['traffic_control_tag'] = assign_traffic_control_tag(df)
+            except: do['traffic_control_tag'] = 'none'
+            try: do['road_feature_tags'] = assign_road_features(df)
+            except: do['road_feature_tags'] = []
+            try: do['environment_tags'] = assign_environmental_tags(df)
+            except: do['environment_tags'] = []
 
-                with open(output_json, 'w') as f:
-                    json.dump(do, f, indent=4)
+            with open(output_json, 'w') as f:
+                json.dump(do, f, indent=4)
 
-            except: print(f'Trouble processing episode: {ep_num}')
+            #except: print(f'Trouble processing episode: {ep_num}')
