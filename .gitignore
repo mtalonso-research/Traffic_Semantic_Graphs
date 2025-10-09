@@ -1,0 +1,69 @@
+# -------------------------
+# Python and PyTorch
+# -------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+env/
+venv/
+.ipynb_checkpoints/
+.DS_Store
+
+# -------------------------
+# IDE / Editor files
+# -------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# -------------------------
+# Logs, cache, outputs
+# -------------------------
+*.log
+logs/
+wandb/
+runs/
+checkpoints/
+*.ckpt
+*.pth
+*.pt
+
+# -------------------------
+# Data (DO NOT TRACK)
+# -------------------------
+data/
+datasets/
+raw_data/
+processed_data/
+cache/
+tmp/
+outputs/
+results/
+*.zip
+*.tar
+*.tar.gz
+*.h5
+*.npz
+*.npy
+*.csv
+*.tsv
+*.pkl
+*.jsonl
+
+# Optional: if you store models or samples here
+models/
+samples/
+
+# -------------------------
+# Jupyter & temporary
+# -------------------------
+*.ipynb_checkpoints
+*.bak
+*.tmp
+*.out

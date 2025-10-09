@@ -5,6 +5,7 @@ import warnings
 from tqdm import tqdm
 import os
 import json
+import glob
 from functions.utils import prepare_and_save_parquet, get_chunk_num
 
 def expand_columns(df):
@@ -287,3 +288,40 @@ def process_tabular_data(min_ep,max_ep=-1,n_sec=3,
 
             #except Exception as e:
                 #print(f"Error processing episode {ep_num} in chunk {chunk}: {e}")
+
+def process_tabular_split(min_ep, max_ep=-1,
+                          source_dir="../data/raw/L2D/tabular",
+                          output_dir="../data/processed/L2D/tabular",
+                          overwrite=False):
+    """
+    Iterate over shard files (parquets) indexed by min_ep:max_ep,
+    split all episodes inside each shard, and save per-episode parquet files.
+    """
+    # Resolve iterable
+    if not isinstance(min_ep, list):
+        if max_ep == -1:
+            max_ep = min_ep + 1
+        iterable = range(min_ep, max_ep)
+    else:
+        iterable = min_ep
+
+    # Collect shard files
+    parquet_files = sorted(glob.glob(os.path.join(source_dir, "*.parquet")))
+    os.makedirs(output_dir, exist_ok=True)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=FutureWarning)
+        pbar = tqdm(iterable, desc="Splitting episodes (tabular)")
+        for file_idx in pbar:
+            if file_idx >= len(parquet_files):
+                continue  # skip out-of-range
+            file_path = parquet_files[file_idx]
+            df = pd.read_parquet(file_path)
+
+            # Group by episode and save
+            for ep_id, ep_df in df.groupby("episode_index"):
+                out_path = os.path.join(output_dir, f"episode_{ep_id:06d}.parquet")
+                if os.path.exists(out_path) and not overwrite:
+                    continue
+                ep_df.sort_values("frame_index").to_parquet(out_path, index=False)
+

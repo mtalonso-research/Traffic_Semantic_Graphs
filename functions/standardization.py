@@ -59,9 +59,11 @@ def standardize_graph(data: dict, dataset: str) -> dict:
     for ego in data.get("nodes", {}).get("ego", []):
         feats = ego.get("features", {})
         if dataset == "l2d":
+            heading = feats.get("heading", 0.0)
             speed = kmh_to_ms(feats.get("speed"))
             vx, vy, vz = -1.0, -1.0, -1.0
         elif dataset == "nuplan":
+            heading = feats.get("heading", 0.0)
             vx = feats.get("vx", 0.0)
             vy = feats.get("vy", 0.0)
             vz = feats.get("vz", 0.0)
@@ -73,6 +75,7 @@ def standardize_graph(data: dict, dataset: str) -> dict:
             "id": ego.get("id"),
             "features": {
                 "speed": speed,
+                "heading": heading,
                 "vx": vx,
                 "vy": vy,
                 "vz": vz,
@@ -114,7 +117,7 @@ def standardize_graph(data: dict, dataset: str) -> dict:
                 "vx": vx,
                 "vy": vy,
                 "vz": vz,
-                "distance_to_ego": dist
+                "distance_to_ego": dist,
             }
         })
 
@@ -352,6 +355,33 @@ def find_non_stationary_files(directory_path: str):
 
     return result_files
 
+def find_non_no_vehicle_files(directory_path: str):
+    """
+    Return a list of JSON filenames that contain at least one non-empty 'vehicle' node list.
+    Skips files that have zero 'vehicle' nodes or malformed node data.
+    """
+    result_files = []
+
+    for filename in os.listdir(directory_path):
+        if not filename.endswith(".json"):
+            continue
+        filepath = os.path.join(directory_path, filename)
+
+        try:
+            with open(filepath, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Skipping {filename} (error: {e})")
+            continue
+
+        nodes = data.get("nodes", {})
+        vehicle_nodes = nodes.get("vehicle", [])
+
+        if isinstance(vehicle_nodes, list) and len(vehicle_nodes) > 0:
+            result_files.append(filename)
+
+    return result_files
+
 
 def clean_json_tags(directory_path: str):
     """
@@ -409,9 +439,16 @@ def clean_json_tags(directory_path: str):
             except Exception as e:
                 print(f"Failed to write {filename} (error: {e})")
 
-def filter_nuplan_episodes(origin_tag_path,origin_graph_path,graph_path,tag_path):
-    non_stationary_list = find_non_stationary_files(origin_tag_path)
-    non_unceretain_list = find_non_uncertain_files(origin_tag_path)
-    final_list = list(set(non_stationary_list) & set(non_unceretain_list))
+def filter_nuplan_episodes(origin_tag_path,origin_graph_path,graph_path,tag_path,toggle={'stationary':True,'uncertain':True,'no_vehicle':True}):
+    def all_json_files(directory):
+        return [f for f in os.listdir(directory) if f.endswith(".json")]
+    
+    if toggle['stationary']: non_stationary_list = find_non_stationary_files(origin_tag_path)
+    else: non_stationary_list = all_json_files(origin_tag_path)
+    if toggle['uncertain']:non_unceretain_list = find_non_uncertain_files(origin_tag_path)
+    else: non_unceretain_list = all_json_files(origin_tag_path)
+    if toggle['no_vehicle']:non_no_vehicle_list = find_non_no_vehicle_files(origin_graph_path)
+    else: non_no_vehicle_list = all_json_files(origin_graph_path)
+    final_list = list(set(non_stationary_list) & set(non_unceretain_list) & set(non_no_vehicle_list))
     copy_files(final_list,origin_tag_path,tag_path)
     copy_files(final_list,origin_graph_path,graph_path)
