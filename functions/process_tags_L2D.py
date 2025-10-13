@@ -286,41 +286,107 @@ def assign_environmental_tags(df):
     if ((hours >= 10) & (hours <= 15)).any():
         tags.add('off_peak_hours')
 
+    # 7. New environmental conditions (like cloudy)
+    if 'observation.state.conditions' in df.columns:
+        conditions = (
+            df['observation.state.conditions']
+            .dropna()
+            .astype(str)
+            .str.lower()
+            .unique()
+        )
+        for cond in conditions:
+            cond_clean = cond.strip()
+            if cond_clean:
+                tags.add(cond_clean)
+
+    # 7. Lighting
+    if 'observation.state.lighting' in df.columns:
+        conditions = (
+            df['observation.state.lighting']
+            .dropna()
+            .astype(str)
+            .str.lower()
+            .unique()
+        )
+        for cond in conditions:
+            cond_clean = cond.strip()
+            if cond_clean:
+                tags.add(cond_clean)
+
     return sorted(tags)
 
-def add_data_tags(min_ep,max_ep=-1,
+def add_data_tags(min_ep, max_ep=-1,
                   data_dir='../data/processed/L2D',
                   tags_dir='../data/semantic_tags/L2D'):
 
+    os.makedirs(tags_dir, exist_ok=True)
+
+    # Handle single or range input
     if not isinstance(min_ep, list):
-        if max_ep == -1: 
+        if max_ep == -1:
             max_ep = min_ep + 1
-        iterable = range(min_ep,max_ep)
+        iterable = range(min_ep, max_ep)
     else:
         iterable = min_ep
 
     with warnings.catch_warnings():
         warnings.simplefilter(action='ignore', category=UserWarning)
-        for ep_num in tqdm(iterable):
+        for ep_num in tqdm(iterable, desc="Generating semantic tags"):
 
-            data_parquet = os.path.join(data_dir,f"episode_{ep_num:06d}.parquet")
-            output_json = os.path.join(tags_dir,f"{ep_num}_graph.json")
+            data_parquet = os.path.join(data_dir, f"episode_{ep_num:06d}.parquet")
+            output_json = os.path.join(tags_dir, f"episode_{ep_num:06d}.json")
 
-            #try:
-            df = load_and_restore_parquet(data_parquet)
-            with open(output_json, 'r') as f:
-                do = json.load(f)
+            # Ensure the parquet exists
+            if not os.path.exists(data_parquet):
+                print(f"⚠️ Missing parquet for episode {ep_num}, skipping.")
+                continue
 
-            try: do['action_tag'] = assign_action_tag(df)
-            except: do['action_tag'] = 'none'
-            try: do['traffic_control_tag'] = assign_traffic_control_tag(df)
-            except: do['traffic_control_tag'] = 'none'
-            try: do['road_feature_tags'] = assign_road_features(df)
-            except: do['road_feature_tags'] = []
-            try: do['environment_tags'] = assign_environmental_tags(df)
-            except: do['environment_tags'] = []
+            # Load dataframe
+            try:
+                df = load_and_restore_parquet(data_parquet)
+            except Exception as e:
+                print(f"⚠️ Could not load parquet for episode {ep_num}: {e}")
+                continue
 
-            with open(output_json, 'w') as f:
-                json.dump(do, f, indent=4)
+            # Start from empty dict instead of reading an existing JSON
+            do = {
+                "episode_index": int(ep_num),
+                "action_tag": None,
+                "traffic_control_tag": None,
+                "road_feature_tags": [],
+                "environment_tags": [],
+            }
 
-            #except: print(f'Trouble processing episode: {ep_num}')
+            # Assign tags safely
+            try:
+                do["action_tag"] = assign_action_tag(df)
+            except Exception as e:
+                print(f"⚠️ Action tag failed for episode {ep_num}: {e}")
+                do["action_tag"] = "none"
+
+            try:
+                do["traffic_control_tag"] = assign_traffic_control_tag(df)
+            except Exception as e:
+                print(f"⚠️ Traffic control tag failed for episode {ep_num}: {e}")
+                do["traffic_control_tag"] = "none"
+
+            try:
+                do["road_feature_tags"] = assign_road_features(df)
+            except Exception as e:
+                print(f"⚠️ Road features failed for episode {ep_num}: {e}")
+                do["road_feature_tags"] = []
+
+            try:
+                do["environment_tags"] = assign_environmental_tags(df)
+            except Exception as e:
+                print(f"⚠️ Environment tags failed for episode {ep_num}: {e}")
+                do["environment_tags"] = []
+
+            # Save to JSON
+            try:
+                with open(output_json, "w") as f:
+                    json.dump(do, f, indent=4)
+                #print(f"✅ Saved tags for episode {ep_num} → {output_json}")
+            except Exception as e:
+                print(f"❌ Failed to write JSON for episode {ep_num}: {e}")

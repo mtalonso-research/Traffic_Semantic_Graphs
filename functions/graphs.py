@@ -64,7 +64,7 @@ def generate_graphs(
         iterable = min_ep
 
     for ep_num in tqdm(iterable):
-        try:
+        #try:
             parquet_path, aux_path, lane_path = directory_lookup(
                 ep_num,
                 source_data_dir,
@@ -82,8 +82,8 @@ def generate_graphs(
             json_path = os.path.join(output_dir, f"{ep_num}_graph.json")
             with open(json_path, 'w') as f:
                 json.dump(graph_dict, f, indent=2)
-        except Exception as e:
-            print(f'Problems with episode {ep_num}: {e}')
+        #except Exception as e:
+        #    print(f'Problems with episode {ep_num}: {e}')
 
 def directory_lookup(ep_num,source_data_dir,processed_frame_dir,lane_frame_dir):
     parquet_path = os.path.join(source_data_dir,f'episode_{ep_num:06d}.parquet')
@@ -175,26 +175,18 @@ def build_graph_json(
         # --- Environment node (unchanged) ---
         env_id = f"env_{frame_id}"
         env_features = {
-            "month": row["month"],
-            "day_of_week": row["day_of_week"],
-            "time_of_day": row["time_of_day"],
-            "road_type": row["road_type"],
-            "road_name": row["road_name"],
-            "maxspeed": row["maxspeed"],
-            "lanes": row["lanes"],
-            "surface": row["surface"],
-            "oneway": row["oneway"],
-            "width": row["width"],
-            "sidewalk": row["sidewalk"],
-            "bicycle": row["bicycle"],
-            "bridge": row["bridge"],
-            "tunnel": row["tunnel"],
-            "traffic_controls": row["traffic_controls"],
-            "traffic_features": row["traffic_features"],
-            "landuse": row["landuse"],
-            "is_narrow": row["is_narrow"],
-            "is_unlit": row["is_unlit"],
-            "bike_friendly": row["bike_friendly"],
+            "month": row.get("month"),
+            "day_of_week": row.get("day_of_week"),
+            "time_of_day": row.get("time_of_day"),
+            "conditions": row.get("observation.state.conditions"),
+            "lanes": row.get("observation.state.lanes"),
+            "lighting": row.get("observation.state.lighting"),
+            "max_speed": row.get("observation.state.max_speed"),
+            "precipitation": row.get("observation.state.precipitation"),
+            "road": row.get("observation.state.road"),
+            "surface": row.get("observation.state.surface"),
+            "traffic_controls": row.get("traffic_controls"),
+            "traffic_features": row.get("traffic_features"),
         }
         graph["nodes"]["environment"].append({"id": env_id, "features": env_features})
 

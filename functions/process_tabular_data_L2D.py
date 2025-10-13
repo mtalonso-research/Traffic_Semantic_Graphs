@@ -38,24 +38,26 @@ def expand_columns(df):
 
     return df
 
+import overpy
+import time
+
 def get_osm_features(lat, lon, time_sleep=1):
     api = overpy.Overpass()
-    time.sleep(time_sleep)  # prevent Overpass rate-limit errors
+    time.sleep(time_sleep)  # prevent rate-limit errors
     errors = 0
 
+    # Focused Overpass query — only controls and crossings / bus stops
     query = f"""
     [out:json][timeout:25];
     (
-      way(around:30,{lat},{lon})["highway"];
       node(around:30,{lat},{lon})["highway"="crossing"];
       node(around:30,{lat},{lon})["highway"="stop"];
       node(around:30,{lat},{lon})["highway"="give_way"];
       node(around:30,{lat},{lon})["highway"="traffic_signals"];
-      node(around:30,{lat},{lon})["traffic_calming"];
+      node(around:30,{lat},{lon})["highway"="bus_stop"];
       node(around:30,{lat},{lon})["railway"="level_crossing"];
+      node(around:30,{lat},{lon})["traffic_calming"];
       way(around:30,{lat},{lon})["junction"="roundabout"];
-      way(around:100,{lat},{lon})["landuse"];
-      node(around:100,{lat},{lon})["place"];
     );
     out body;
     >;
@@ -65,73 +67,48 @@ def get_osm_features(lat, lon, time_sleep=1):
     try:
         result = api.query(query)
     except Exception as e:
-        #print(f"Query failed at lat={lat}, lon={lon}: {e}")
+        # print(f"Overpass query failed at lat={lat}, lon={lon}: {e}")
         errors = 1
-        return {}, errors
+        return {"traffic_controls": [], "traffic_features": []}, errors
 
-    # Initialize outputs
-    road = {}
     traffic_controls = set()
     traffic_features = set()
-    amenities = set()
-    shops = set()
-    landuse = set()
-    places = set()
-    derived_flags = {}
 
+    # Process ways (mostly for roundabouts)
     for way in result.ways:
-        if "highway" in way.tags and not road:
-            road = {
-                "road_type": way.tags.get("highway"),
-                "road_name": way.tags.get("name"),
-                "maxspeed": way.tags.get("maxspeed"),
-                "lanes": way.tags.get("lanes"),
-                "surface": way.tags.get("surface"),
-                "oneway": way.tags.get("oneway"),
-                "width": way.tags.get("width"),
-                "sidewalk": way.tags.get("sidewalk"),
-                "bicycle": way.tags.get("bicycle"),
-                "bridge": way.tags.get("bridge", "no"),
-                "tunnel": way.tags.get("tunnel", "no")
-            }
-        if "landuse" in way.tags:
-            landuse.add(way.tags["landuse"])
         if way.tags.get("junction") == "roundabout":
             traffic_controls.add("roundabout")
 
+    # Process nodes
     for node in result.nodes:
-        if node.tags.get("highway") == "crossing":
+        highway_tag = node.tags.get("highway")
+        railway_tag = node.tags.get("railway")
+
+        if highway_tag == "crossing":
             traffic_features.add("pedestrian_crossing")
-        elif node.tags.get("highway") == "bus_stop":
+        elif highway_tag == "bus_stop":
             traffic_features.add("bus_stop")
-        elif node.tags.get("highway") == "stop":
+        elif highway_tag == "stop":
             traffic_controls.add("stop_sign")
-        elif node.tags.get("highway") == "give_way":
+        elif highway_tag == "give_way":
             traffic_controls.add("yield_sign")
-        elif node.tags.get("highway") == "traffic_signals":
+        elif highway_tag == "traffic_signals":
             traffic_controls.add("traffic_signal")
+
         if "traffic_calming" in node.tags:
-            traffic_controls.add(f"traffic_calming:{node.tags['traffic_calming']}")
-        if node.tags.get("railway") == "level_crossing":
+            tc = node.tags["traffic_calming"]
+            traffic_controls.add(f"traffic_calming:{tc}")
+
+        if railway_tag == "level_crossing":
             traffic_controls.add("railway_crossing")
 
-    if road:
-        width_val = road.get("width")
-        derived_flags = {
-            "is_narrow": float(width_val.replace('m', '').strip()) < 5.0 if isinstance(width_val, str) and width_val.strip() else None,
-            "is_unlit": road.get("lit") == "no",
-            "bike_friendly": road.get("bicycle") in ["yes", "designated"],
-        }
+    flat_output = {
+        "traffic_controls": sorted(list(traffic_controls)),
+        "traffic_features": sorted(list(traffic_features))
+    }
 
-    flat_features = {**road}
-    flat_features.update({
-        "traffic_controls": ", ".join(sorted(traffic_controls)) if traffic_controls else None,
-        "traffic_features": ", ".join(sorted(traffic_features)) if traffic_features else None,
-        "landuse": ", ".join(sorted(landuse)) if landuse else None,
-    })
-    flat_features.update(derived_flags)
+    return flat_output, errors
 
-    return flat_features, errors
 
 def enrich_dataframe_with_osm_tags(df, lat_col="lat", lon_col="lon", time_sleep=1, verbose=True):
     enriched_rows = []
