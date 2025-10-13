@@ -24,7 +24,7 @@ from functions.graphs import generate_graphs
 import argparse
 parser = argparse.ArgumentParser(description="Process L2D data.")
 parser.add_argument("--min_ep", type=int, default=0, help="Minimum episode number to process.")
-parser.add_argument("--max_ep", type=int, default=-1, help="Maximum episode number to process. Use -1 to process all available episodes.")
+parser.add_argument("--max_ep", type=int, default=-1, help="Maximum episode number to process.")
 args = parser.parse_args()
 
 def default_l2d_processing(min_ep,max_ep=-1):
