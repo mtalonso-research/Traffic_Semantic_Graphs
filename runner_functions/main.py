@@ -67,7 +67,6 @@ def default_l2d_processing(min_ep,max_ep=-1):
                     input_base_dir = './data/raw/L2D/frames',
                     output_base_dir = './data/processed_frames/L2D')
     _ = lane_processing(min_ep,max_ep,
-                        input_base_dir = './data/raw/L2D/frames',
                         output_base_dir = './data/processed_frames/L2D')
     print("========== Generate Graphs ==========")
     generate_graphs(min_ep,max_ep,
