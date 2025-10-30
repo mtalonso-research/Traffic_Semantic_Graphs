@@ -1,5 +1,7 @@
 # Traffic Semantic Graphs
 
+<img src="project_overview.png" alt="project overview">
+
 ## 📁 Directory Overview
 
 ```plaintext
