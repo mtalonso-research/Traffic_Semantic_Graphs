@@ -45,6 +45,29 @@ def extract_frames(episode: dict):
     ped_by_t = _collect_by_time(nodes.get("pedestrian", []))
     obj_by_t = _collect_by_time(nodes.get("object", []))
 
+    all_agent_collections = {
+        'vehicle': veh_by_t,
+        'pedestrian': ped_by_t,
+        'object': obj_by_t
+    }
+
+    for agent_type, collection in all_agent_collections.items():
+        # Check if this category has any agents at all AND is missing from frame 0
+        if collection and 0 not in collection:
+            # Create an invisible dummy agent with NaN coordinates
+            dummy_agent = {
+                'id': f'dummy_{agent_type}_0',
+                'type': agent_type,
+                'features': {
+                    'x': np.nan,
+                    'y': np.nan,
+                    'vx': 0,
+                    'vy': 0
+                }
+            }
+            # Add it to the collection for frame 0
+            collection[0].append(dummy_agent)
+
     # Determine frame indices: trust metadata if present; else infer from keys
     ts = set()
     if n_frames_meta is not None:

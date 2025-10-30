@@ -6,95 +6,110 @@ import re
 from collections import defaultdict
 from tqdm import tqdm
 
+EARTH_RADIUS_M = 6371000.0
 def ego_processing_l2d(input_dir, output_dir):
     """
-    Processes all JSON files in input_dir, applying ego-node transformations:
-    1. Converts heading (deg, compass CW from North) → radians (-π, π) math-style.
-    2. Computes world-frame vx, vy from speed and heading.
-    3. Rotates body-frame ax, ay to world-frame for consistency.
-    4. Converts lat/lon to local x, y (meters, relative to first ego node).
-    5. Converts speed from km/h → m/s.
-    6. Keeps only standardized, world-frame features.
+    Processes raw ego vehicle data from JSON files in an input directory.
 
-    Saves processed JSONs to output_dir with same filenames.
+    For each file, it converts the ego vehicle's trajectory data to an
+    ENU (East-North-Up) coordinate system relative to the first frame.
+    It processes position, speed, heading, velocity, and acceleration,
+    then saves the fully processed data structure to a new JSON file.
+
+    Args:
+        input_dir (str): The path to the directory containing the raw JSON files.
+        output_dir (str): The path to the directory where processed JSON files will be saved.
     """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # Ensure the output directory exists, creating it if necessary
+    os.makedirs(output_dir, exist_ok=True)
 
-    def latlon_to_xy(lat, lon, lat0, lon0):
-        k_y = 111_320.0
-        k_x = 111_320.0 * math.cos(math.radians(lat0))
-        x = (lon - lon0) * k_x
-        y = (lat - lat0) * k_y
-        return x, y
+    # Filter for .json files and prepare the progress bar
+    file_list = [f for f in os.listdir(input_dir) if f.endswith('.json')]
+    
+    for filename in tqdm(file_list, desc="Ego"):
+        input_path = os.path.join(input_dir, filename)
+        output_path = os.path.join(output_dir, filename)
 
-    def heading_deg_to_rad(hdg_deg):
-        # Converts from Compass (CW from North) to Math angle (CCW from East/X-axis)
-        hdg_rad_unwrapped = math.radians(90 - hdg_deg)
-        # Wrap the angle to the [-pi, pi] interval
-        hdg_rad = (hdg_rad_unwrapped + math.pi) % (2 * math.pi) - math.pi
-        return hdg_rad
-
-    for fname in tqdm(os.listdir(input_dir),desc='Ego Vehicle'):
-        if not fname.endswith(".json"):
+        try:
+            with open(input_path, 'r') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Skipping file {filename} due to an error: {e}")
             continue
 
-        fpath = os.path.join(input_dir, fname)
-        with open(fpath, "r") as f:
-            data = json.load(f)
-
-        egos = data.get("nodes", {}).get("ego", [])
-        if not egos:
+        # Safely access the list of ego frames
+        ego_frames = data.get('nodes', {}).get('ego', [])
+        
+        # If there's no ego data to process, write the original file and continue
+        if not ego_frames:
+            with open(output_path, 'w') as f:
+                json.dump(data, f, indent=4)
             continue
+            
+        # --- 1. Initialization ---
+        # Set the first frame's location as the origin (0,0)
+        origin_lat_deg = ego_frames[0]['features']['latitude']
+        origin_lon_deg = ego_frames[0]['features']['longitude']
+        origin_lat_rad = math.radians(origin_lat_deg)
 
-        # FIX 3: Use .get() for robust access to prevent crashes
-        first_features = egos[0].get("features", {})
-        lat0 = first_features.get("latitude", 0.0)
-        lon0 = first_features.get("longitude", 0.0)
+        processed_ego_frames = []
+        for frame_data in ego_frames:
+            features = frame_data['features']
+            
+            # --- 2. Position Conversion (Lat/Lon -> ENU x, y) ---
+            lat_rad = math.radians(features['latitude'])
+            lon_rad = math.radians(features['longitude'])
+            
+            x = EARTH_RADIUS_M * (lon_rad - math.radians(origin_lon_deg)) * math.cos(origin_lat_rad)
+            y = EARTH_RADIUS_M * (lat_rad - math.radians(origin_lat_deg))
+            
+            # --- 3. Speed Conversion (km/h -> m/s) ---
+            speed_ms = features['speed'] / 3.6
+            
+            # --- 4. Heading Conversion (Compass Degrees -> ENU Radians) ---
+            heading_compass_deg = features['heading']
+            heading_enu_deg = (450.0 - heading_compass_deg) % 360.0
+            heading_enu_rad = math.radians(heading_enu_deg)
+            # Normalize to the [-pi, pi] range
+            heading_normalized_rad = (heading_enu_rad + math.pi) % (2 * math.pi) - math.pi
 
-        for ego in egos:
-            feat = ego.get("features", {})
-
-            heading_deg = feat.get("heading", 90.0) # Default to North if missing
-            heading_rad = heading_deg_to_rad(heading_deg)
-
-            # FIX 1: Unconditionally convert speed from km/h to m/s
-            speed_kph = feat.get("speed", 0.0)
-            speed_ms = speed_kph / 3.6
-
-            # Velocity components (calculated in World Frame)
-            cos_h = math.cos(heading_rad)
-            sin_h = math.sin(heading_rad)
-            vx_world = speed_ms * cos_h
-            vy_world = speed_ms * sin_h
-
-            # FIX 2: Rotate acceleration from Body Frame to World Frame
-            ax_body = feat.get("accel_x", 0.0)
-            ay_body = feat.get("accel_y", 0.0)
-            ax_world = ax_body * cos_h - ay_body * sin_h
-            ay_world = ax_body * sin_h + ay_body * cos_h
-
-            # Local x, y (in meters)
-            lat = feat.get("latitude", lat0)
-            lon = feat.get("longitude", lon0)
-            x, y = latlon_to_xy(lat, lon, lat0, lon0)
-
-            ego["features"] = {
-                "vx": vx_world,
-                "vy": vy_world,
-                "ax": ax_world,
-                "ay": ay_world,
-                "heading": heading_rad,
-                "x": x,
-                "y": y,
-                "speed": speed_ms,
-                "steering": feat.get("steering", 0.0),
+            # --- 5. Velocity Calculation (ENU vx, vy) ---
+            vx = speed_ms * math.cos(heading_normalized_rad)
+            vy = speed_ms * math.sin(heading_normalized_rad)
+            
+            # --- 6. Acceleration Transformation (Vehicle Frame -> ENU Frame) ---
+            accel_longitudinal = features['accel_x']
+            accel_lateral = features['accel_y']
+            
+            ax_enu = accel_longitudinal * math.cos(heading_normalized_rad) - accel_lateral * math.sin(heading_normalized_rad)
+            ay_enu = accel_longitudinal * math.sin(heading_normalized_rad) + accel_lateral * math.cos(heading_normalized_rad)
+            
+            # --- 7. Assemble Final Features ---
+            processed_features = {
+                'x': x,
+                'y': y,
+                'vx': vx,
+                'vy': vy,
+                'ax': ax_enu,
+                'ay': ay_enu,
+                'heading': heading_normalized_rad,
+                'speed': speed_ms,
+                'steering': features['steering'] # Pass this value through directly
             }
-            ego["type"] = feat.get("type")
+            
+            # Create a new frame structure with the processed features
+            new_frame = {
+                'id': frame_data['id'],
+                'features': processed_features
+            }
+            processed_ego_frames.append(new_frame)
 
-        outpath = os.path.join(output_dir, fname)
-        with open(outpath, "w") as f:
-            json.dump(data, f, indent=2)
+        # Replace the original ego data with the new, processed data
+        data['nodes']['ego'] = processed_ego_frames
+
+        # Save the fully modified data structure to the output directory
+        with open(output_path, 'w') as f:
+            json.dump(data, f, indent=4)
 
     print("✅ All files processed and saved to:", output_dir)
 
@@ -393,136 +408,146 @@ def env_processing_nup(input_dir):
 
     print("✅ NUP environment processing complete.")
 
-def veh_processing_l2d(input_dir, annotation_root, hfov_deg=90, time_step_s=3.0):
+HFOV_DEG = 100.0  # Assumed Horizontal Field of View in degrees
+IMAGE_WIDTH_PX = 1920.0 # Standard image width for calculating pixel offset
+
+def veh_processing_l2d(input_dir, annotation_root):
     """
-    Processes vehicle nodes by recalculating motion from estimated positions.
-    1. Pass 1: For each vehicle track, calculate all scene-centric (x, y) positions.
-    2. Pass 2: Use the history of positions to calculate a new, consistent
-       world-frame (vx, vy) vector for each frame using finite differences.
-    3. Speed is recalculated from the new (vx, vy) vector.
+    Processes other vehicle data in JSON files by converting their ego-centric
+    features into an absolute ENU coordinate system.
+
+    This function reads files from an input directory, assumes the 'ego' nodes
+    are already processed, and uses corresponding annotation files to calculate
+    absolute position and velocity for other vehicles. The files are modified in-place.
+
+    Args:
+        input_dir (str): Path to the directory with JSON files (with processed ego nodes).
+        annotation_root (str): Root path for the annotation files directory structure.
     """
+    hfov_rad = math.radians(HFOV_DEG)
+    image_center_px = IMAGE_WIDTH_PX / 2.0
+    
+    file_list = [f for f in os.listdir(input_dir) if f.endswith('.json')]
+    
+    for filename in tqdm(file_list, desc="Processing Other Vehicles"):
+        file_path = os.path.join(input_dir, filename)
 
-    # ... (helper functions compute_xy_from_bbox, _episode_dir_for remain the same) ...
-    def compute_xy_from_bbox(bbox, dist, img_w, hfov_deg):
-        if not bbox or dist is None: raise ValueError("Missing bbox or distance.")
-        x_min, _, w, _ = bbox
-        u_center = x_min + w / 2.0
-        cx = img_w / 2.0
-        bearing = -((u_center - cx) / cx) * math.radians(hfov_deg / 2.0)
-        x_rel, y_rel = dist * math.cos(bearing), dist * math.sin(bearing)
-        return x_rel, y_rel
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Skipping file {filename} due to an error: {e}")
+            continue
 
-    def _episode_dir_for(graph_filename, metadata_graph_id, annotation_root):
-        m = re.search(r'(\d+)', graph_filename)
-        id_digits = m.group(1) if m else None
-        if not id_digits and metadata_graph_id:
-            m2 = re.search(r'(\d+)', str(metadata_graph_id))
-            id_digits = m2.group(1) if m2 else None
-        if not id_digits: raise ValueError(f"Could not extract id from '{graph_filename}' or '{metadata_graph_id}'")
-        eid = id_digits.zfill(6)
-        ep_no_underscore, ep_with_underscore = f"Episode{eid}", f"Episode_{eid}"
-        if os.path.isdir(os.path.join(annotation_root, ep_no_underscore)): return ep_no_underscore
-        if os.path.isdir(os.path.join(annotation_root, ep_with_underscore)): return ep_with_underscore
-        raise FileNotFoundError(f"Could not find annotation folder for episode {eid}")
-    # -----------------------------------------------------------------------------
+        vehicle_frames = data.get('nodes', {}).get('vehicle', [])
+        ego_frames = data.get('nodes', {}).get('ego', [])
 
-    for fname in tqdm(os.listdir(input_dir),desc='Vehicles'):
-        if not fname.endswith("_graph.json"): continue
-        graph_path = os.path.join(input_dir, fname)
-        with open(graph_path, "r") as f: data = json.load(f)
+        if not vehicle_frames or not ego_frames:
+            continue # No vehicles to process or no ego reference data
 
-        vehicles = data.get("nodes", {}).get("vehicle", [])
-        if not vehicles: continue
+        # --- 1. Pre-computation and Setup ---
+        # Create a lookup map for ego data for efficient access
+        ego_lookup = {frame['id']: frame['features'] for frame in ego_frames}
 
-        egos = data.get("nodes", {}).get("ego", [])
-        ego_pos_lookup = {}
-        for ego_node in egos:
+        # Extract episode number from metadata to build annotation path
+        try:
+            parquet_path = data['metadata']['source_files']['parquet']
+            match = re.search(r'episode_(\d+)', parquet_path)
+            if not match:
+                print(f"Warning: Could not find episode number in {filename}. Skipping.")
+                continue
+            ep_num = int(match.group(1))
+        except KeyError:
+            print(f"Warning: Could not find parquet metadata in {filename}. Skipping.")
+            continue
+            
+        processed_vehicle_frames = []
+        # --- 2. Main Processing Loop ---
+        for vehicle in vehicle_frames:
             try:
-                frame_idx = int(ego_node["id"].split("_")[-1])
-                ego_feat = ego_node.get("features", {})
-                if "x" in ego_feat and "y" in ego_feat: ego_pos_lookup[frame_idx] = (ego_feat["x"], ego_feat["y"])
-            except (ValueError, IndexError): continue
+                # Get the frame number and track ID from the vehicle's ID
+                parts = vehicle['id'].split('_')
+                frame_num = int(parts[-1])
+                track_id = "_".join(parts[:-1]) # e.g., "Veh_FL_A"
 
-        metadata_graph_id = data.get("metadata", {}).get("graph_id")
-        episode_dir = _episode_dir_for(fname, metadata_graph_id, annotation_root)
-        ann_base = os.path.join(annotation_root, episode_dir, "front_left_Annotations")
+                # Find the corresponding ego data for this frame
+                ego_id = f'ego_{frame_num}'
+                ego_features = ego_lookup.get(ego_id)
+                if not ego_features:
+                    print('COULD NOT FIND')
+                    continue # Skip if no matching ego frame is found
 
-        grouped = defaultdict(list)
-        for v in vehicles:
-            parts = v["id"].split("_")
-            grouped["_".join(parts[:-1])].append((int(parts[-1]), v))
+                # Load the corresponding annotation file
+                annotation_path = os.path.join(
+                    annotation_root,
+                    f'Episode{ep_num:06d}',
+                    'front_left_Annotations',
+                    f'frame_{frame_num:05d}.json'
+                )
+                with open(annotation_path, 'r') as f_ann:
+                    annotation_data = json.load(f_ann)
+                
+                # Find the vehicle's specific annotation using its track_id
+                vehicle_annotation = next((ann for ann in annotation_data['annotations'] if ann['track_id'] == track_id), None)
+                if not vehicle_annotation:
+                    continue # Skip if no matching annotation is found
 
-        for track_prefix, veh_list in grouped.items():
-            # Sort the track by frame index to ensure correct order
-            veh_list.sort(key=lambda item: item[0])
+                # --- 3. Perform Calculations ---
+                ego_heading_rad = ego_features['heading']
+                dist_to_ego = vehicle['features']['dist_to_ego']
+                
+                # --- Position Calculation ---
+                bbox = vehicle_annotation['bbox'] # [x_min, y_min, width, height]
+                bbox_center_px = bbox[0] + (bbox[2] / 2.0)
+                pixel_offset = bbox_center_px - image_center_px
+                
+                # Positive angle is left, negative is right
+                relative_angle = -(pixel_offset / IMAGE_WIDTH_PX) * hfov_rad
+                global_angle = ego_heading_rad + relative_angle
+                
+                x = ego_features['x'] + dist_to_ego * math.cos(global_angle)
+                y = ego_features['y'] + dist_to_ego * math.sin(global_angle)
+                
+                # --- Velocity Calculation ---
+                # Assumes velocity_ms[0] is lateral (y-axis in vehicle frame, left is pos)
+                # and velocity_ms[1] is longitudinal (x-axis in vehicle frame, forward is pos)
+                v_rel_lat, v_rel_lon = vehicle['features']['velocity_ms'][0], vehicle['features']['velocity_ms'][1]
+                
+                cos_h, sin_h = math.cos(ego_heading_rad), math.sin(ego_heading_rad)
+                
+                # Rotate the relative velocity vector into the global ENU frame
+                v_rot_x = v_rel_lon * cos_h - v_rel_lat * sin_h
+                v_rot_y = v_rel_lon * sin_h + v_rel_lat * cos_h
+                
+                # Add the ego's absolute velocity
+                vx = ego_features['vx'] + v_rot_x
+                vy = ego_features['vy'] + v_rot_y
+                
+                speed = math.sqrt(vx**2 + vy**2)
 
-            # --- PASS 1: Calculate and store all scene-centric positions for the track ---
-            track_positions = []
-            for frame_idx, veh_node in veh_list:
-                feat = veh_node.get("features", {})
-                annot_path = os.path.join(ann_base, f"frame_{frame_idx:05}.json")
-                if not os.path.exists(annot_path): continue # Skip if annotation is missing
+                # --- 4. Assemble Final Features ---
+                processed_features = {
+                    'x': x,
+                    'y': y,
+                    'vx': vx,
+                    'vy': vy,
+                    'speed': speed,
+                    'dist_to_ego': dist_to_ego
+                }
+                
+                processed_vehicle_frames.append({'id': vehicle['id'], 'features': processed_features, 'type': 'vehicle'})
 
-                with open(annot_path, "r") as f: annot_data = json.load(f)
-                track_entry = next((ann for ann in annot_data.get("annotations", []) if ann.get("track_id") == track_prefix), None)
-                if not track_entry: continue
-
-                dist = feat.get("dist_to_ego") or track_entry.get("attributes", {}).get("depth_stats", {}).get("mean_depth")
-                bbox = track_entry.get("bbox")
-                if dist is None or not bbox: continue
-
-                img_w = annot_data["images"][0]["width"]
-                x_rel_ego, y_rel_ego = compute_xy_from_bbox(bbox, dist, img_w, hfov_deg)
-
-                x_ego_scene, y_ego_scene = ego_pos_lookup.get(frame_idx, (0.0, 0.0))
-                x_scene, y_scene = x_rel_ego + x_ego_scene, y_rel_ego + y_ego_scene
-
-                track_positions.append({
-                    "x": x_scene, "y": y_scene, "dist_to_ego": dist, "original_node": veh_node
-                })
-
-            # --- PASS 2: Calculate velocities based on the stored positions ---
-            num_frames = len(track_positions)
-            if num_frames < 2: # Cannot calculate velocity for single-frame tracks
-                if num_frames == 1: # Set velocity to zero for single frame
-                     track_positions[0]['original_node']['features'] = {
-                        "x": track_positions[0]['x'], "y": track_positions[0]['y'],
-                        "vx": 0.0, "vy": 0.0, "speed": 0.0,
-                        "dist_to_ego": track_positions[0]['dist_to_ego'],
-                    }
+            except (KeyError, IndexError, FileNotFoundError) as e:
+                # Catch potential issues with missing data or files
+                # print(f"Info: Could not process vehicle {vehicle.get('id', 'N/A')} in {filename}. Reason: {e}")
                 continue
 
-            for i in range(num_frames):
-                current = track_positions[i]
-                
-                if i == 0: # First frame: use forward difference
-                    next_frame = track_positions[i+1]
-                    vx = (next_frame['x'] - current['x']) / time_step_s
-                    vy = (next_frame['y'] - current['y']) / time_step_s
-                elif i == num_frames - 1: # Last frame: use backward difference
-                    prev_frame = track_positions[i-1]
-                    vx = (current['x'] - prev_frame['x']) / time_step_s
-                    vy = (current['y'] - prev_frame['y']) / time_step_s
-                else: # Middle frames: use central difference for more stability
-                    next_frame = track_positions[i+1]
-                    prev_frame = track_positions[i-1]
-                    vx = (next_frame['x'] - prev_frame['x']) / (2 * time_step_s)
-                    vy = (next_frame['y'] - prev_frame['y']) / (2 * time_step_s)
-                
-                speed = math.hypot(vx, vy)
+        # --- 5. Update and Save In-Place ---
+        data['nodes']['vehicle'] = processed_vehicle_frames
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=4)
 
-                # Update the original node's features with the newly calculated motion
-                current['original_node']['features'] = {
-                    "x": current['x'], "y": current['y'],
-                    "vx": vx, "vy": vy, "speed": speed,
-                    "dist_to_ego": current['dist_to_ego'],
-                }
-                current['original_node']["type"] = current["type"]
-
-        with open(graph_path, "w") as f:
-            json.dump(data, f, indent=2)
-
-    print("🏁 Vehicle node processing complete.")
+    print(f"✅ All vehicle data processed and files updated in: {input_dir}")
 
 def veh_processing_nup(input_dir, raw_dir):
     """

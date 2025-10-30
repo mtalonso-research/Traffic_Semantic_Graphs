@@ -34,7 +34,7 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
 
         ego_processing_l2d(input_dir=in_dir, output_dir=out_dir)
         env_processing_l2d(input_dir=out_dir)
-        veh_processing_l2d(input_dir=out_dir, annotation_root=annot_dir,hfov_deg=90)
+        veh_processing_l2d(input_dir=out_dir, annotation_root=annot_dir)
         ped_processing_l2d(out_dir)
     
     if process_nuplan_boston:

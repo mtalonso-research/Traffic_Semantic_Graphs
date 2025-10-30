@@ -86,7 +86,8 @@ def visualize_frames(frames_data, use_lat_lon=False):
             symbol='type', color='type', hover_name='id', hover_data={'vx': ':.2f', 'vy': ':.2f'},
             title=f"{title_prefix} ({'Geographic' if use_lat_lon else 'Cartesian'})",
             labels=labels, width=1200, height=800, template='plotly_dark',
-            range_x=x_range, range_y=y_range
+            range_x=x_range, range_y=y_range,
+            category_orders={'type': ['ego', 'vehicle', 'pedestrian', 'object', 'unknown']}
         )
     else:
         # --- Static Plot with Velocity Lines ---
