@@ -79,7 +79,7 @@ def default_l2d_processing(min_ep, max_ep=-1,
     if run_lanes:
         print("========== Processing Lanes ==========")
         lane_processing(min_ep, max_ep,
-                        output_base_dir='./data/processed_frames/L2D_lanes',
+                        output_base_dir='./data/processed_frames/L2D',
                         raw_base_dir='./data/raw/L2D/frames')
 
     if run_graphs:
@@ -87,7 +87,7 @@ def default_l2d_processing(min_ep, max_ep=-1,
         generate_graphs(min_ep, max_ep,
                         source_data_dir='./data/processed/L2D',
                         processed_frame_dir='./data/processed_frames/L2D',
-                        lane_frame_dir='./data/processed_frames/L2D_lanes',
+                        lane_frame_dir='./data/processed_frames/L2D',
                         output_dir='./data/graphical/L2D')
 
 
