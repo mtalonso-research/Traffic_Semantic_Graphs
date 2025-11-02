@@ -8,22 +8,8 @@ from tqdm import tqdm
 
 EARTH_RADIUS_M = 6371000.0
 def ego_processing_l2d(input_dir, output_dir):
-    """
-    Processes raw ego vehicle data from JSON files in an input directory.
-
-    For each file, it converts the ego vehicle's trajectory data to an
-    ENU (East-North-Up) coordinate system relative to the first frame.
-    It processes position, speed, heading, velocity, and acceleration,
-    then saves the fully processed data structure to a new JSON file.
-
-    Args:
-        input_dir (str): The path to the directory containing the raw JSON files.
-        output_dir (str): The path to the directory where processed JSON files will be saved.
-    """
-    # Ensure the output directory exists, creating it if necessary
     os.makedirs(output_dir, exist_ok=True)
 
-    # Filter for .json files and prepare the progress bar
     file_list = [f for f in os.listdir(input_dir) if f.endswith('.json')]
     
     for filename in tqdm(file_list, desc="Ego"):
@@ -37,17 +23,14 @@ def ego_processing_l2d(input_dir, output_dir):
             print(f"Warning: Skipping file {filename} due to an error: {e}")
             continue
 
-        # Safely access the list of ego frames
         ego_frames = data.get('nodes', {}).get('ego', [])
-        
-        # If there's no ego data to process, write the original file and continue
+
         if not ego_frames:
             with open(output_path, 'w') as f:
                 json.dump(data, f, indent=4)
             continue
             
         # --- 1. Initialization ---
-        # Set the first frame's location as the origin (0,0)
         origin_lat_deg = ego_frames[0]['features']['latitude']
         origin_lon_deg = ego_frames[0]['features']['longitude']
         origin_lat_rad = math.radians(origin_lat_deg)
@@ -97,17 +80,14 @@ def ego_processing_l2d(input_dir, output_dir):
                 'steering': features['steering'] # Pass this value through directly
             }
             
-            # Create a new frame structure with the processed features
             new_frame = {
                 'id': frame_data['id'],
                 'features': processed_features
             }
             processed_ego_frames.append(new_frame)
 
-        # Replace the original ego data with the new, processed data
         data['nodes']['ego'] = processed_ego_frames
 
-        # Save the fully modified data structure to the output directory
         with open(output_path, 'w') as f:
             json.dump(data, f, indent=4)
 
@@ -174,21 +154,26 @@ def ego_processing_nup(input_dir, output_dir):
             if heading is not None:
                 last_known_heading = heading
 
-            # --- FIX: Ensure motion vectors are floats, not None ---
             vx_body = feat.get("vx") or 0.0
             vy_body = feat.get("vy") or 0.0
             ax_body = feat.get("ax") or 0.0
             ay_body = feat.get("ay") or 0.0
-            # ----------------------------------------------------
             
             cos_h = math.cos(heading)
             sin_h = math.sin(heading)
-            vx_world = vx_body * cos_h - vy_body * sin_h
-            vy_world = vx_body * sin_h + vy_body * cos_h
-            ax_world = ax_body * cos_h - ay_body * sin_h
-            ay_world = ax_body * sin_h + ay_body * cos_h
 
-            speed = math.sqrt(vx_body**2 + vy_body**2)
+            if not heading_is_estimated:
+                speed = math.sqrt(vx_body**2 + vy_body**2)
+                vx_world = vx_body * cos_h - vy_body * sin_h
+                vy_world = vx_body * sin_h + vy_body * cos_h
+                ax_world = ax_body * cos_h - ay_body * sin_h
+                ay_world = ax_body * sin_h + ay_body * cos_h
+            else:
+                if last_known_heading is not None:
+                    heading = last_known_heading
+                else:
+                    heading = 0.0
+
             x_abs = feat.get("x") or 0.0
             y_abs = feat.get("y") or 0.0
             x_rel = x_abs - x0
@@ -299,7 +284,6 @@ def env_processing_l2d(input_dir):
                 "daylight": daylight
             }
 
-        # overwrite the file in place
         with open(fpath, "w") as f:
             json.dump(data, f, indent=2)
 
@@ -446,10 +430,8 @@ def veh_processing_l2d(input_dir, annotation_root):
             continue # No vehicles to process or no ego reference data
 
         # --- 1. Pre-computation and Setup ---
-        # Create a lookup map for ego data for efficient access
         ego_lookup = {frame['id']: frame['features'] for frame in ego_frames}
 
-        # Extract episode number from metadata to build annotation path
         try:
             parquet_path = data['metadata']['source_files']['parquet']
             match = re.search(r'episode_(\d+)', parquet_path)
@@ -465,17 +447,16 @@ def veh_processing_l2d(input_dir, annotation_root):
         # --- 2. Main Processing Loop ---
         for vehicle in vehicle_frames:
             try:
-                # Get the frame number and track ID from the vehicle's ID
                 parts = vehicle['id'].split('_')
                 frame_num = int(parts[-1])
-                track_id = "_".join(parts[:-1]) # e.g., "Veh_FL_A"
+                track_id = "_".join(parts[:-1]) 
 
                 # Find the corresponding ego data for this frame
                 ego_id = f'ego_{frame_num}'
                 ego_features = ego_lookup.get(ego_id)
                 if not ego_features:
                     print('COULD NOT FIND')
-                    continue # Skip if no matching ego frame is found
+                    continue 
 
                 # Load the corresponding annotation file
                 annotation_path = os.path.join(
@@ -509,8 +490,6 @@ def veh_processing_l2d(input_dir, annotation_root):
                 y = ego_features['y'] + dist_to_ego * math.sin(global_angle)
                 
                 # --- Velocity Calculation ---
-                # Assumes velocity_ms[0] is lateral (y-axis in vehicle frame, left is pos)
-                # and velocity_ms[1] is longitudinal (x-axis in vehicle frame, forward is pos)
                 v_rel_lat, v_rel_lon = vehicle['features']['velocity_ms'][0], vehicle['features']['velocity_ms'][1]
                 
                 cos_h, sin_h = math.cos(ego_heading_rad), math.sin(ego_heading_rad)
@@ -538,11 +517,8 @@ def veh_processing_l2d(input_dir, annotation_root):
                 processed_vehicle_frames.append({'id': vehicle['id'], 'features': processed_features, 'type': 'vehicle'})
 
             except (KeyError, IndexError, FileNotFoundError) as e:
-                # Catch potential issues with missing data or files
-                # print(f"Info: Could not process vehicle {vehicle.get('id', 'N/A')} in {filename}. Reason: {e}")
                 continue
 
-        # --- 5. Update and Save In-Place ---
         data['nodes']['vehicle'] = processed_vehicle_frames
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=4)
@@ -577,9 +553,6 @@ def veh_processing_nup(input_dir, raw_dir):
         if not ego_nodes_raw or not vehicles:
             continue
 
-        # --- START OF CHANGE ---
-
-        # Get the reference coordinates from the FIRST ego node only
         first_ego_features = ego_nodes_raw[0].get("features", {})
         x0 = first_ego_features.get("x", 0.0)
         y0 = first_ego_features.get("y", 0.0)
@@ -596,8 +569,6 @@ def veh_processing_nup(input_dir, raw_dir):
             x, y = f_raw.get("x"), f_raw.get("y")
             if x is not None and y is not None:
                 ego_lookup[idx] = (x, y)
-        
-        # --- END OF CHANGE ---
 
         for v in vehicles:
             vid = v["id"]
@@ -619,8 +590,6 @@ def veh_processing_nup(input_dir, raw_dir):
             if x_v_abs is None or y_v_abs is None:
                 raise ValueError(f"No x/y for vehicle {vid} in {fname}")
 
-            # --- START OF CHANGE ---
-
             # Project vehicle coordinates relative to the scene origin (ego's start)
             x_rel_scene = x_v_abs - x0
             y_rel_scene = y_v_abs - y0
@@ -628,7 +597,6 @@ def veh_processing_nup(input_dir, raw_dir):
             # Calculate distance to ego using their absolute positions in this frame
             dist_to_ego = math.sqrt((x_v_abs - x_e_current)**2 + (y_v_abs - y_e_current)**2)
             
-            # --- END OF CHANGE ---
 
             vx = f.get("vx")
             vy = f.get("vy")
@@ -637,19 +605,17 @@ def veh_processing_nup(input_dir, raw_dir):
                 speed = math.sqrt(vx**2 + vy**2)
 
             v["features"] = {
-                "x": x_rel_scene, # Use the new scene-relative coordinates
-                "y": y_rel_scene, # Use the new scene-relative coordinates
+                "x": x_rel_scene, 
+                "y": y_rel_scene, 
                 "vx": vx,
                 "vy": vy,
                 "speed": speed,
-                "dist_to_ego": dist_to_ego # This is still correct
+                "dist_to_ego": dist_to_ego 
             }
             v["type"] = f.get("type")
 
         with open(graph_path, "w") as f:
             json.dump(proc_data, f, indent=2)
-
-        print(f"✅ Processed {fname}")
 
     print("🏁 Vehicle node NUP processing complete.")
 
@@ -686,7 +652,6 @@ def ped_processing_l2d(input_dir):
             else:
                 kept.append(v)
 
-        # Update node lists
         if moved:
             nodes["vehicle"] = kept
             nodes["pedestrian"] = pedestrians + moved

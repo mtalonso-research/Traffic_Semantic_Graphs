@@ -2,6 +2,7 @@ import argparse
 from src.data_processing.final_post_processing import (ego_processing_l2d, env_processing_l2d, veh_processing_l2d, ped_processing_l2d,
                                                                        ego_processing_nup, env_processing_nup, veh_processing_nup, ped_processing_nup, 
                                                                        obj_processing_nup)
+from src.data_processing.filtering import filter_json_files
 
 parser = argparse.ArgumentParser(description="Final Processing of Graphical Data")
 parser.add_argument(
@@ -32,7 +33,8 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
         out_dir = './data/graphical_final/L2D'
         annot_dir = "./data/processed_frames/L2D/"
 
-        ego_processing_l2d(input_dir=in_dir, output_dir=out_dir)
+        filter_json_files(source_dir=in_dir,output_dir=out_dir)
+        ego_processing_l2d(input_dir=out_dir, output_dir=out_dir)
         env_processing_l2d(input_dir=out_dir)
         veh_processing_l2d(input_dir=out_dir, annotation_root=annot_dir)
         ped_processing_l2d(out_dir)
@@ -42,7 +44,8 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
         in_dir = './data/graphical/nuplan_boston/'
         out_dir = './data/graphical_final/nuplan_boston'
 
-        ego_processing_nup(input_dir=in_dir, output_dir=out_dir)
+        filter_json_files(source_dir=in_dir,output_dir=out_dir)
+        ego_processing_nup(input_dir=out_dir, output_dir=out_dir)
         env_processing_nup(out_dir)
         veh_processing_nup(input_dir=out_dir, raw_dir=in_dir)
         ped_processing_nup(input_dir=out_dir, raw_dir=in_dir)
@@ -53,7 +56,8 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
         in_dir = './data/graphical/nuplan_pitssburgh/'
         out_dir = './data/graphical_final/nuplan_pitssburgh'
 
-        ego_processing_nup(input_dir=in_dir, output_dir=out_dir)
+        filter_json_files(source_dir=in_dir,output_dir=out_dir)
+        ego_processing_nup(input_dir=out_dir, output_dir=out_dir)
         env_processing_nup(out_dir)
         veh_processing_nup(input_dir=out_dir, raw_dir=in_dir)
         ped_processing_nup(input_dir=out_dir, raw_dir=in_dir)
