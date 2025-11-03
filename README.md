@@ -1,6 +1,6 @@
 # Traffic Semantic Graphs
 
-<img src="project_overview.png" alt="project overview">
+<img src="figures/project_overview.png" alt="project overview">
 
 ## 📁 Directory Overview
 
