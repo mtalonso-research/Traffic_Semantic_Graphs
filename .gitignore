@@ -56,6 +56,7 @@ results/
 *.tsv
 *.pkl
 *.jsonl
+*.html
 
 # Optional: if you store models or samples here
 models/
