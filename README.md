@@ -52,62 +52,78 @@ This phase involves processing the raw data from the L2D and NuPlan datasets int
 
 ### 1A: L2D Data Processing
 
-The `1A_l2d_processing.py` script processes the L2D dataset. It performs the following steps:
-- Downloads the data
-- Processes tabular data
-- Adds tags
-- Processes frames
-- Processes lanes
-- Generates graphs
+The `1A_l2d_processing.py` script processes the L2D dataset.
 
-To run the entire L2D processing pipeline, use the following command:
-
+**Usage:**
 ```bash
-python scripts/1A_l2d_processing.py --all
+python -m scripts.1A_l2d_processing [-h] [--min_ep MIN_EP] [--max_ep MAX_EP] [--download] [--process_tabular] [--add_tags] [--process_frames] [--process_lanes] [--generate_graphs] [--all]
 ```
 
-You can also run specific steps by using the corresponding flags (e.g., `--download`, `--process_tabular`, etc.).
+**Arguments:**
+- `-h, --help`: show this help message and exit
+- `--min_ep MIN_EP`: Minimum episode number to process.
+- `--max_ep MAX_EP`: Maximum episode number to process.
+- `--download`: Run data download step.
+- `--process_tabular`: Run tabular data processing step.
+- `--add_tags`: Run tag processing step.
+- `--process_frames`: Run frame processing step.
+- `--process_lanes`: Run lane processing step.
+- `--generate_graphs`: Run graph generation step.
+- `--all`: Run all steps (default if no flags are set).
+
+To run the entire L2D processing pipeline, use the following command:
+```bash
+python -m scripts.1A_l2d_processing --all
+```
 
 ### 1B: NuPlan Data Processing
 
-The `1B_nup_processing.py` script processes the NuPlan dataset. It can process data for Boston and Pittsburgh. The script can perform the following steps:
-- Load data
-- Add latitude and longitude
-- Enrich weather features
-- Replace weather codes
-- Add temporal features
-- Extract semantic tags
+The `1B_nup_processing.py` script processes the NuPlan dataset.
+
+**Usage:**
+```bash
+python -m scripts.1B_nup_processing [-h] [--city CITY] [--file_min FILE_MIN] [--file_max FILE_MAX] [--episodes EPISODES [EPISODES ...]] [--load] [--latlon] [--weather] [--weather_codes] [--temporal] [--tags]
+```
+
+**Arguments:**
+- `-h, --help`: show this help message and exit
+- `--city CITY`: City to process (boston or pittsburgh).
+- `--file_min FILE_MIN`: Minimum DB file index to process (inclusive).
+- `--file_max FILE_MAX`: Maximum DB file index to process (exclusive). Use 'none' for all after file_min.
+- `--episodes EPISODES [EPISODES ...]`: Episodes to Process.
+- `--load`: Run only the data loading step.
+- `--latlon`: Run only the lat/lon addition step.
+- `--weather`: Run only the weather enrichment step.
+- `--weather_codes`: Run only the weather code replacement step.
+- `--temporal`: Run only the temporal feature addition step.
+- `--tags`: Run only the tag extraction step.
 
 To run the NuPlan processing for a specific city (e.g., Boston) and a specific step (e.g., tags), use the following command:
-
 ```bash
-python scripts/1B_nup_processing.py --city boston --tags
+python -m scripts.1B_nup_processing --city boston --tags
 ```
 
 To run all steps, you can omit the step-specific flags:
-
 ```bash
-python scripts/1B_nup_processing.py --city boston
+python -m scripts.1B_nup_processing --city boston
 ```
 
 ### 1C: Final Post-Processing
 
-The `1C_final_processing.py` script performs final post-processing on the generated graph data. This includes filtering and enriching the data.
+The `1C_final_processing.py` script performs final post-processing on the generated graph data.
+
+**Usage:**
+```bash
+python -m scripts.1C_final_processing [-h] [--process_l2d] [--process_nuplan_boston] [--process_nuplan_pittsburgh]
+```
+
+**Arguments:**
+- `-h, --help`: show this help message and exit
+- `--process_l2d`: Run L2D final processing
+- `--process_nuplan_boston`: Run nuPlan Boston final processing
+- `--process_nuplan_pittsburgh`: Run nuPlan Pittsburgh final processing
 
 To run the final processing for a specific dataset, use the corresponding flag. For example, to process the L2D dataset:
-
 ```bash
-python scripts/1C_final_processing.py --process_l2d
-```
-
-To process the NuPlan Boston dataset:
-
-```bash
-python scripts/1C_final_processing.py --process_nuplan_boston
-```
-
-To process the NuPlan Pittsburgh dataset:
-
-```bash
-python scripts/1C_final_processing.py --process_nuplan_pittsburgh
+python -m scripts.1C_final_processing --process_l2d
 ```
