@@ -69,3 +69,5 @@ samples/
 *.bak
 *.tmp
 *.out
+
+GEMINI.md
