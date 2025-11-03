@@ -7,21 +7,18 @@ from src.data_processing.filtering import filter_json_files
 parser = argparse.ArgumentParser(description="Final Processing of Graphical Data")
 parser.add_argument(
     '--process_l2d',
-    type=bool,
-    default=False,
-    help='True/False whether to run L2D final processing'
+    action='store_true',
+    help='Run L2D final processing'
 )
 parser.add_argument(
     '--process_nuplan_boston',
-    type=bool,
-    default=False,
-    help='True/False whether to run nuPlan Boston final processing'
+    action='store_true',
+    help='Run nuPlan Boston final processing'
 )
 parser.add_argument(
     '--process_nuplan_pittsburgh',
-    type=bool,
-    default=False,
-    help='True/False whether to run nuPlan Pittsburgh final processing'
+    action='store_true',
+    help='Run nuPlan Pittsburgh final processing'
 )
 args = parser.parse_args()
 
@@ -53,8 +50,8 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
 
     if process_nuplan_pittsburgh:
         print('============ Final Processing for nuPlan Pittsburgh ===========')
-        in_dir = './data/graphical/nuplan_pitssburgh/'
-        out_dir = './data/graphical_final/nuplan_pitssburgh'
+        in_dir = './data/graphical/nuplan_pittsburgh/'
+        out_dir = './data/graphical_final/nuplan_pittsburgh'
 
         filter_json_files(source_dir=in_dir,output_dir=out_dir)
         ego_processing_nup(input_dir=out_dir, output_dir=out_dir)

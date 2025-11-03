@@ -8,6 +8,7 @@ from src.data_processing.nup_process_jsons import (
     replace_weather_code_with_description,
     add_temporal_features,
 )
+from src.data_processing.nup_process_tags import extract_tags
 
 # --- 1. Add boolean arguments for each processing step ---
 parser = argparse.ArgumentParser(description="Process NuPlan data.")
@@ -22,11 +23,12 @@ parser.add_argument("--latlon", action='store_true', help="Run only the lat/lon 
 parser.add_argument("--weather", action='store_true', help="Run only the weather enrichment step.")
 parser.add_argument("--weather_codes", action='store_true', help="Run only the weather code replacement step.")
 parser.add_argument("--temporal", action='store_true', help="Run only the temporal feature addition step.")
+parser.add_argument("--tags", action='store_true', help="Run only the tag extraction step.")
 
 args = parser.parse_args()
 
 # --- 2. Logic to handle the default "all true" or "specific true" case ---
-processing_steps = ['load', 'latlon', 'weather', 'weather_codes', 'temporal']
+processing_steps = ['load', 'latlon', 'weather', 'weather_codes', 'temporal', 'tags']
 # Check if any specific step was requested by the user
 any_step_selected = any(getattr(args, step) for step in processing_steps)
 
@@ -36,30 +38,38 @@ if not any_step_selected:
         setattr(args, step, True)
 
 # --- 3. Update the function to accept the boolean flags ---
-def default_nuplan_processing(city, file_min=0, file_max=None, episodes=None, run_load=True, run_latlon=True, run_weather=True, run_weather_codes=True, run_temporal=True):
-    db_dir = f"./data/raw/NuPlan/train_{city}"
-    out_dir = f"./data/graphical/nuplan_{city}"
-    os.makedirs(out_dir, exist_ok=True)
+import glob
+
+def default_nuplan_processing(city, file_min=0, file_max=None, episodes=None, run_load=True, run_latlon=True, run_weather=True, run_weather_codes=True, run_temporal=True, run_tags=True):
+    db_dir = f"./data/raw/NuPlan/train_{city}/nuplan-v1.1/train"
+    graph_dir = f"./data/graphical/nuplan_{city}"
+    tag_dir = f"./data/semantic_tags/nuplan_{city}"
+    os.makedirs(graph_dir, exist_ok=True)
+    os.makedirs(tag_dir, exist_ok=True)
 
     if run_load:
         print("========== Load Data ==========")
-        load_data(db_dir=db_dir, out_dir=out_dir, time_idx=3, file_min=file_min, file_max=file_max)
+        load_data(db_dir=db_dir, out_dir=graph_dir, time_idx=3, file_min=file_min, file_max=file_max)
 
     if run_latlon:
         print("========== Add Latitude / Longitude ==========")
-        add_latlon_to_graphs(json_dir=out_dir, out_dir=out_dir, map_region=city, episodes=episodes)
+        add_latlon_to_graphs(json_dir=graph_dir, out_dir=graph_dir, map_region=city, episodes=episodes)
 
     if run_weather:
         print("========== Enrich Weather Features ==========")
-        enrich_weather_features(json_dir=out_dir, out_dir=out_dir, episodes=episodes, sleep_s=0.15)
+        enrich_weather_features(json_dir=graph_dir, out_dir=graph_dir, episodes=episodes, sleep_s=0.15)
 
     if run_weather_codes:
         print("========== Replace Weather Codes ==========")
-        replace_weather_code_with_description(json_dir=out_dir, out_dir=out_dir, remove_numeric=False)
+        replace_weather_code_with_description(json_dir=graph_dir, out_dir=graph_dir, remove_numeric=False)
 
     if run_temporal:
         print("========== Add Temporal Features ==========")
-        add_temporal_features(json_dir=out_dir, out_dir=out_dir)
+        add_temporal_features(json_dir=graph_dir, out_dir=graph_dir)
+
+    if run_tags:
+        print("========== Extract Semantic Tags ==========")
+        extract_tags(data_root=db_dir, output_dir=tag_dir, graph_dir=graph_dir)
 
     print(f"✅ Finished processing NuPlan data for {city}.")
 
@@ -75,5 +85,6 @@ if __name__ == "__main__":
         run_latlon=args.latlon,
         run_weather=args.weather,
         run_weather_codes=args.weather_codes,
-        run_temporal=args.temporal
+        run_temporal=args.temporal,
+        run_tags=args.tags
     )

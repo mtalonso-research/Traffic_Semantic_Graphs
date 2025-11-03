@@ -99,8 +99,10 @@ class DummyWorker:
 def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
     """
     Simplified: export one JSON per scene (no episode logic). Pedestrians are their own node type.
+    Returns a list of mapping dictionaries for generated files.
     """
     db_stem = Path(DB_PATH).stem
+    db_name = Path(DB_PATH).name
     OUT_DIR = os.path.join(out_dir_root, db_stem)
     os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -111,12 +113,11 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
     if scenes.empty:
         print(f"[{db_stem}] No scenes found.")
         conn.close()
-        return 0
+        return [] # Return empty list
 
     lb_cols   = pd.read_sql_query("PRAGMA table_info(lidar_box);", conn)['name'].tolist()
     ego_cols  = pd.read_sql_query("PRAGMA table_info(ego_pose);", conn)['name'].tolist()
-    # (scenario_tag presence isn't needed anymore for this export, kept in case you want to extend)
-
+    
     # Setup NuPlan API (for ego lookup)
     nuplan_root = _find_nuplan_data_root(DB_PATH)
     builder = NuPlanScenarioBuilder(
@@ -146,7 +147,7 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
             for ego in sc.get_ego_state_iter():
                 ego_lookup[int(ego.time_point.time_us)] = ego
 
-    written_paths = []
+    written_mappings = [] # Changed from written_paths
 
     for _, sc in scenes.iterrows():
         SCENE_TOKEN = sc["token"]
@@ -321,7 +322,7 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
             },
             "metadata": {
                 "graph_id": f"{db_stem[:8]}_scene_{str(SCENE_TOKEN)[:8]}",
-                "db_file": Path(DB_PATH).name,
+                "db_file": db_name,
                 "scene_token": str(SCENE_TOKEN),
                 "scene_name": SCENE_NAME,
                 "t_start": float(frames_ds["t_rel"].min()),
@@ -333,20 +334,23 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
         out_path = os.path.join(OUT_DIR, f"{graph['metadata']['graph_id']}.json")
         with open(out_path, "w") as f:
             json.dump(graph, f, indent=2)
-        written_paths.append(out_path)
+        
+        # --- MODIFICATION: Store mapping info ---
+        written_mappings.append({
+            "json_file_name": Path(out_path).name,
+            "db_name": db_name,
+            "scene_token": str(SCENE_TOKEN),
+            "scene_name": SCENE_NAME,
+            "temp_path": out_path  # Store the full path for later moving
+        })
+        # --- END MODIFICATION ---
 
     conn.close()
-    return len(written_paths)
+    return written_mappings # Return the list of mappings
 
 # ---------------- I/O helpers ----------------
-def rename_jsons_in_dir(directory):
-    json_files = [f for f in os.listdir(directory) if f.endswith('.json')]
-    json_files.sort()
-    for idx, filename in enumerate(json_files):
-        old_path = os.path.join(directory, filename)
-        new_filename = f"{idx}_graph.json"
-        new_path = os.path.join(directory, new_filename)
-        os.rename(old_path, new_path)
+# --- MODIFICATION: Removed rename_jsons_in_dir function ---
+# It will be replaced by inline logic in load_data
 
 def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0, file_max=None):
     """
@@ -358,7 +362,11 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
                         Example: file_min=10, file_max=19 processes the 10th–19th DBs.
                         file_max=None means "to the end".
     """
-    total = 0
+    # --- MODIFICATION: Initialize mapping list ---
+    total_count = 0
+    all_mappings = []
+    # --- END MODIFICATION ---
+
     os.makedirs(out_dir, exist_ok=True)
     db_paths = sorted([str(p) for p in Path(db_dir).rglob("*.db")])
     n_total = len(db_paths)
@@ -380,7 +388,11 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
     for idx, db in enumerate(tqdm(db_subset, desc="DB processing", unit="db", initial=file_min)):
         try:
             print(f"\n[{file_min + idx}] Processing DB: {db}")
-            total += process_db(db, out_dir, sample_step_s=time_idx)
+            # --- MODIFICATION: Collect mappings ---
+            mappings_from_db = process_db(db, out_dir, sample_step_s=time_idx)
+            all_mappings.extend(mappings_from_db)
+            total_count += len(mappings_from_db)
+            # --- END MODIFICATION ---
         except FileNotFoundError as e:
             print(f"⚠️ Skipping {db} — file not found: {e}")
             failed.append((db, str(e)))
@@ -391,34 +403,82 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
             print(f"⚠️ Skipping {db} due to unexpected error: {type(e).__name__}: {e}")
             failed.append((db, str(e)))
 
-    # Flatten scene subdirs into out_dir
-    for root, dirs, files in os.walk(out_dir):
-        if root == out_dir:
+    # --- MODIFICATION: Replace flattening logic to use the mapping list ---
+    print(f"\nFlattening {len(all_mappings)} JSON files...")
+    for mapping in tqdm(all_mappings, desc="Flattening files"):
+        src = mapping['temp_path']
+        base_name = mapping['json_file_name']
+        dst = os.path.join(out_dir, base_name)
+
+        if not os.path.exists(src):
+            print(f"Warning: Source file {src} not found during flattening. Skipping.")
+            mapping['flat_path'] = None # Mark as failed
             continue
-        for file in files:
-            if file.endswith(".json"):
-                src = os.path.join(root, file)
-                dst = os.path.join(out_dir, file)
-                if os.path.exists(dst):
-                    base, ext = os.path.splitext(file)
-                    i = 1
-                    while os.path.exists(dst):
-                        dst = os.path.join(out_dir, f"{base}_{i}{ext}")
-                        i += 1
-                shutil.move(src, dst)
+
+        if os.path.exists(dst):
+            base, ext = os.path.splitext(base_name)
+            i = 1
+            while os.path.exists(dst):
+                dst_name = f"{base}_{i}{ext}"
+                dst = os.path.join(out_dir, dst_name)
+                i += 1
+            # Update the filename in the mapping if it changed
+            mapping['json_file_name'] = dst_name
+        
+        shutil.move(src, dst)
+        mapping['flat_path'] = dst # Store the new, flattened path
+    # --- END MODIFICATION ---
 
     # Remove now-empty directories
     for root, dirs, files in os.walk(out_dir, topdown=False):
         if root != out_dir and not files and not dirs:
-            os.rmdir(root)
+            try:
+                os.rmdir(root)
+            except OSError as e:
+                print(f"Warning: Could not remove directory {root}: {e}")
 
-    rename_jsons_in_dir(out_dir)
+    # --- MODIFICATION: Replace rename_jsons_in_dir with inline logic & CSV generation ---
+    print("\nRenaming files and generating mapping CSV...")
+    final_csv_data = []
+    
+    # Filter out any files that failed to flatten
+    valid_mappings = [m for m in all_mappings if m.get('flat_path') and os.path.exists(m['flat_path'])]
+    
+    # Sort by the flattened file path to replicate original rename behavior
+    valid_mappings.sort(key=lambda m: m['flat_path'])
 
-    print(f"\n✅ Successfully processed {total} scenes (skipped {len(failed)} broken DBs).")
+    for idx, mapping in enumerate(tqdm(valid_mappings, desc="Renaming files")):
+        old_path = mapping['flat_path']
+        new_filename = f"{idx}_graph.json"
+        new_path = os.path.join(out_dir, new_filename)
+        
+        try:
+            os.rename(old_path, new_path)
+            # Add to CSV data *only* if rename was successful
+            final_csv_data.append({
+                "json_file_name": new_filename,
+                "db_name": mapping['db_name'],
+                "scene_name": mapping['scene_name'],
+                "scene_token": mapping['scene_token']
+            })
+        except OSError as e:
+            print(f"Warning: Could not rename {old_path} to {new_path}: {e}")
+
+    # Save the CSV
+    if final_csv_data:
+        df = pd.DataFrame(final_csv_data)
+        # Ensure column order
+        csv_path = os.path.join(out_dir, "file_mapping.csv")
+        df.to_csv(csv_path, index=False, columns=["json_file_name", "db_name", "scene_name", "scene_token"])
+        print(f"✅ Mapping CSV saved to {csv_path}")
+    else:
+        print("No valid files were processed, CSV not generated.")
+    # --- END MODIFICATION ---
+
+    print(f"\n✅ Successfully processed {total_count} scenes (skipped {len(failed)} broken DBs).")
     if failed:
         print("Failed DBs:")
         for db, err in failed:
             print(f"  {db}: {err}")
-    return total
-
-
+    
+    return total_count # Return the total count as before
