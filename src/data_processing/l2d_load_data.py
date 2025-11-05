@@ -2,7 +2,7 @@ import os
 from huggingface_hub import hf_hub_download
 import cv2
 import shutil
-from functions.utils import get_chunk_num
+from src.utils import get_chunk_num
 import pandas as pd
 import subprocess
 import imageio_ffmpeg
