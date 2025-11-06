@@ -1,0 +1,49 @@
+name: nuplan
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # --- 1. Core CONDA Packages (for heavy binaries) ---
+  - python=3.9
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - opencv
+  - geopandas
+  - rasterio
+  - pyproj
+  - shapely
+  - jupyterlab
+  - matplotlib-base
+  - tqdm
+  - pyyaml
+  - requests
+
+  # --- 2. PIP Packages (for everything else) ---
+  - pip
+  - pip:
+    - nuplan-devkit==1.2.2
+    - aioboto3==15.5.0
+    - aiobotocore==2.25.1
+    - aiofiles==25.1.0
+    - aiohappyeyeballs==2.6.1
+    - aiohttp==3.13.2
+    - aioitertools==0.12.0
+    - aiosignal==1.4.0
+    - async-timeout==5.0.1
+    - boto3==1.40.61
+    - botocore==1.40.61
+    - cachetools==6.2.1
+    - frozenlist==1.8.0
+    - iniconfig==2.1.0
+    - jmespath==1.0.1
+    - multidict==6.7.0
+    - pluggy==1.6.0
+    - propcache==0.4.1
+    - pyquaternion==0.9.9
+    - pytest==8.4.2
+    - s3transfer==0.14.0
+    - urllib3==1.26.20
+    - wrapt==1.17.3
+    - yarl==1.22.0
