@@ -110,23 +110,46 @@ def try_alternative_download(verbose):
     except Exception as e:
         return (None, None, None)
 
-def estimate_depth(image, model, transform, device):
-    """Estimate depth using Depth Pro"""
+def estimate_depth(image_path, model, transform, device):
+    """Estimate depth using Depth Pro with proper focal length"""
     if model is None:
-        return (None, None)
+        return None, None
     try:
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_image)
-        image_tensor = transform(pil_image).unsqueeze(0).to(device)
+        import depth_pro
+        # Use depth_pro's load_rgb to get focal length
+        image, _, f_px = depth_pro.load_rgb(image_path)
+        image_tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
-            prediction = model.infer(image_tensor)
-            depth = prediction['depth']
+            prediction = model.infer(image_tensor, f_px=f_px)  # Pass f_px!
+            depth = prediction["depth"]
+        # Convert to numpy
         depth_map = depth.squeeze().cpu().numpy()
+        # Create colormap
         depth_normalized = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX)
         depth_colormap = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_JET)
-        return (depth_map, depth_colormap)
+        return depth_map, depth_colormap
     except Exception as e:
-        return (None, None)
+        print(f"Error in depth estimation: {e}")
+        return None, None
+        
+
+# def estimate_depth(image, model, transform, device):
+#     """Estimate depth using Depth Pro"""
+#     if model is None:
+#         return (None, None)
+#     try:
+#         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+#         pil_image = Image.fromarray(rgb_image)
+#         image_tensor = transform(pil_image).unsqueeze(0).to(device)
+#         with torch.no_grad():
+#             prediction = model.infer(image_tensor)
+#             depth = prediction['depth']
+#         depth_map = depth.squeeze().cpu().numpy()
+#         depth_normalized = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX)
+#         depth_colormap = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_JET)
+#         return (depth_map, depth_colormap)
+#     except Exception as e:
+#         return (None, None)
 
 def extract_depth_from_bbox(depth_map, bbox):
     """Extract depth statistics from bounding box region"""
@@ -173,60 +196,198 @@ def setting_up(verbose=True):
     depth_model, depth_transform, depth_device = initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose)
     return (DEPTH_PRO_AVAILABLE, depth_model, depth_transform, depth_device)
 
+
 class SpeedEstimator:
     """
-    Class to handle 3D vector speed estimation for vehicles
-    """
-
-    def __init__(self, fps=10, time_step=2):
-        self.fps = fps
-        self.time_step = time_step
-        self.frame_time = time_step / fps
-
-    def calculate_pixel_to_meter_ratio(self, depth_stats, bbox_height):
+    Minimal speed estimator with optional debug output
+    Uses depth directly for Z, simple approximation for X,Y
+    """ 
+    def __init__(self, n_seconds=3, image_width=1920, debug=False):
         """
-        Estimate pixel to meter ratio using depth information
+        Args:
+            n_seconds: Time between frames (MUST match your data extraction!)
+            image_width: Image width in pixels
+            debug: Enable debug output
         """
-        if depth_stats is None or depth_stats.get('median_depth') is None:
-            estimated_depth = 20.0
-            return (1.5 / bbox_height, estimated_depth)
-        median_depth = depth_stats['median_depth']
-        vehicle_height_m = 1.5
-        pixel_to_meter = vehicle_height_m / bbox_height
-        return (pixel_to_meter, median_depth)
-
-    def calculate_speed_from_positions(self, pos_history, depth_history, bbox_heights):
+        self.frame_time = n_seconds
+        self.image_width = image_width
+        self.debug = debug
+        
+        if self.debug:
+            print(f"\n{'='*70}")
+            print(f"MinimalSpeedEstimator Initialized")
+            print(f"{'='*70}")
+            print(f"  Frame time: {self.frame_time} seconds")
+            print(f"  Image width: {self.image_width} pixels")
+            print(f"  FOV assumption: ~90° horizontal")
+            print(f"{'='*70}\n")
+    
+    def calculate_speed_from_positions(self, pos_history, depth_history, 
+                                      bbox_heights=None, class_name=None):
         """
-        Calculate relative 3D velocity vector using position history and depth information.
+        Calculate speed with optional debug output
+        
+        Args:
+            pos_history: List of (x, y) pixel positions
+            depth_history: List of depth stats dicts
+            bbox_heights: Not used (for compatibility)
+            class_name: Not used (for compatibility)
+        Returns:
+            (speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh)
         """
-        if len(pos_history) < 2:
+        if len(pos_history) < 2 or len(depth_history) < 2:
             return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        
         current_pos = pos_history[-1]
-        prev_pos = pos_history[-2] if len(pos_history) >= 2 else pos_history[-1]
+        prev_pos = pos_history[-2]
+        current_depth_stats = depth_history[-1]
+        prev_depth_stats = depth_history[-2]
+        if not current_depth_stats or not prev_depth_stats:
+            return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        current_depth = current_depth_stats.get('median_depth')
+        prev_depth = prev_depth_stats.get('median_depth')
+        if current_depth is None or prev_depth is None or current_depth <= 0 or prev_depth <= 0:
+            return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        # ==================== DEBUG OUTPUT START ====================
+        if self.debug:
+            print(f"\n{'='*70}")
+            print(f"SPEED CALCULATION - MinimalSpeedEstimator")
+            print(f"{'='*70}")
+            print(f"Frame time: {self.frame_time}s")
+            if class_name:
+                print(f"Object class: {class_name}")
+        # Pixel displacement
         dx_pixels = current_pos[0] - prev_pos[0]
         dy_pixels = current_pos[1] - prev_pos[1]
-        current_depth = depth_history[-1] if len(depth_history) > 0 else None
-        prev_depth = depth_history[-2] if len(depth_history) > 1 else current_depth
-        current_bbox_height = bbox_heights[-1] if bbox_heights else 50
-        pixel_to_meter, depth = self.calculate_pixel_to_meter_ratio(current_depth, current_bbox_height)
-        velocity_x_ms = dx_pixels * pixel_to_meter / self.frame_time
-        velocity_y_ms = -dy_pixels * pixel_to_meter / self.frame_time
-        velocity_z_ms = 0.0
-        if current_depth and prev_depth and current_depth.get('median_depth') and prev_depth.get('median_depth'):
-            depth_change = current_depth['median_depth'] - prev_depth['median_depth']
-            velocity_z_ms = depth_change / self.frame_time
-        pixel_displacement = math.sqrt(dx_pixels * dx_pixels + dy_pixels * dy_pixels)
-        displacement_m = pixel_displacement * pixel_to_meter
-        speed_ms = displacement_m / self.frame_time
+        
+        if self.debug:
+            print(f"\n📍 Position Data:")
+            print(f"  Previous: ({prev_pos[0]:.1f}, {prev_pos[1]:.1f}) pixels")
+            print(f"  Current:  ({current_pos[0]:.1f}, {current_pos[1]:.1f}) pixels")
+            print(f"  Change:   ({dx_pixels:+.1f}, {dy_pixels:+.1f}) pixels")
+        
+        # Depth displacement (already in meters!)
+        dz_meters = current_depth - prev_depth
+        
+        if self.debug:
+            print(f"\n📏 Depth Data:")
+            print(f"  Previous: {prev_depth:.2f}m")
+            print(f"  Current:  {current_depth:.2f}m")
+            print(f"  Change:   {dz_meters:+.2f}m")
+            print(f"  Status:   {'⬇ APPROACHING' if dz_meters < 0 else '⬆ DEPARTING' if dz_meters > 0 else '↔ STATIONARY'}")
+        
+        # Approximate pixel-to-meter conversion using depth
+        # Assumes ~90° horizontal FOV
+        avg_depth = (current_depth + prev_depth) / 2.0
+        pixel_to_meter = (2.0 * avg_depth) / self.image_width
+        
+        if self.debug:
+            print(f"\n🔄 Pixel-to-Meter Conversion:")
+            print(f"  Average depth: {avg_depth:.2f}m")
+            print(f"  Visible width: {2.0 * avg_depth:.2f}m (assumes 90° FOV)")
+            print(f"  Ratio: {pixel_to_meter:.6f} m/pixel")
+            print(f"  (i.e., 1 pixel = {pixel_to_meter * 100:.2f} cm at this depth)")
+        
+        dx_meters = dx_pixels * pixel_to_meter
+        dy_meters = dy_pixels * pixel_to_meter
+        
+        if self.debug:
+            print(f"\n📐 Lateral Displacement:")
+            print(f"  X: {dx_pixels:+.1f} pixels = {dx_meters:+.3f}m")
+            print(f"  Y: {dy_pixels:+.1f} pixels = {dy_meters:+.3f}m")
+            print(f"  Z: {dz_meters:+.3f}m (from depth)")
+        
+        # Calculate velocities (m/s)
+        velocity_x_ms = dx_meters / self.frame_time
+        velocity_y_ms = dy_meters / self.frame_time
+        velocity_z_ms = dz_meters / self.frame_time
+        
+        if self.debug:
+            print(f"\n⚡ Velocity Components:")
+            print(f"  Vx (lateral):  {velocity_x_ms:+.3f} m/s = {velocity_x_ms * 3.6:+.2f} km/h")
+            print(f"  Vy (vertical): {velocity_y_ms:+.3f} m/s = {velocity_y_ms * 3.6:+.2f} km/h")
+            print(f"  Vz (depth):    {velocity_z_ms:+.3f} m/s = {velocity_z_ms * 3.6:+.2f} km/h")
+        
+        # Calculate scalar speed (3D magnitude)
+        displacement_3d = math.sqrt(dx_meters**2 + dy_meters**2 + dz_meters**2)
+        speed_ms = displacement_3d / self.frame_time
         speed_kmh = speed_ms * 3.6
+        
+        if self.debug:
+            print(f"\n🎯 Total Speed:")
+            print(f"  3D displacement: {displacement_3d:.3f}m")
+            print(f"  Speed: {speed_ms:.3f} m/s = {speed_kmh:.2f} km/h")
+        
+        # Velocity vectors
         velocity_vector_ms = (velocity_x_ms, velocity_y_ms, velocity_z_ms)
         velocity_vector_kmh = (velocity_x_ms * 3.6, velocity_y_ms * 3.6, velocity_z_ms * 3.6)
+        
+        # Sanity checks and clamping
+        speed_kmh_original = speed_kmh
         speed_kmh = max(0, min(speed_kmh, 300))
         speed_ms = speed_kmh / 3.6
-        max_component_kmh = 150
-        velocity_vector_kmh = tuple((max(-max_component_kmh, min(max_component_kmh, v)) for v in velocity_vector_kmh))
-        velocity_vector_ms = tuple((v / 3.6 for v in velocity_vector_kmh))
+        
+        velocity_vector_ms = tuple(v / 3.6 for v in velocity_vector_kmh)
+        
+       
+        
+        # ==================== DEBUG OUTPUT END ====================
         return (speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh)
+
+# class SpeedEstimator:
+#     """
+#     Class to handle 3D vector speed estimation for vehicles
+#     """
+
+#     def __init__(self, fps=10, time_step=2):
+#         self.fps = fps
+#         self.time_step = time_step
+#         self.frame_time = time_step / fps
+
+#     def calculate_pixel_to_meter_ratio(self, depth_stats, bbox_height):
+#         """
+#         Estimate pixel to meter ratio using depth information
+#         """
+#         if depth_stats is None or depth_stats.get('median_depth') is None:
+#             estimated_depth = 20.0
+#             return (1.5 / bbox_height, estimated_depth)
+#         median_depth = depth_stats['median_depth']
+#         vehicle_height_m = 1.5
+#         pixel_to_meter = vehicle_height_m / bbox_height
+#         return (pixel_to_meter, median_depth)
+
+#     def calculate_speed_from_positions(self, pos_history, depth_history, bbox_heights):
+#         """
+#         Calculate relative 3D velocity vector using position history and depth information.
+#         """
+#         if len(pos_history) < 2:
+#             return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+#         current_pos = pos_history[-1]
+#         prev_pos = pos_history[-2] if len(pos_history) >= 2 else pos_history[-1]
+#         dx_pixels = current_pos[0] - prev_pos[0]
+#         dy_pixels = current_pos[1] - prev_pos[1]
+#         current_depth = depth_history[-1] if len(depth_history) > 0 else None
+#         prev_depth = depth_history[-2] if len(depth_history) > 1 else current_depth
+#         current_bbox_height = bbox_heights[-1] if bbox_heights else 50
+#         pixel_to_meter, depth = self.calculate_pixel_to_meter_ratio(current_depth, current_bbox_height)
+#         velocity_x_ms = dx_pixels * pixel_to_meter / self.frame_time
+#         velocity_y_ms = -dy_pixels * pixel_to_meter / self.frame_time
+#         velocity_z_ms = 0.0
+#         if current_depth and prev_depth and current_depth.get('median_depth') and prev_depth.get('median_depth'):
+#             depth_change = current_depth['median_depth'] - prev_depth['median_depth']
+#             velocity_z_ms = depth_change / self.frame_time
+#         pixel_displacement = math.sqrt(dx_pixels * dx_pixels + dy_pixels * dy_pixels)
+#         displacement_m = pixel_displacement * pixel_to_meter
+#         speed_ms = displacement_m / self.frame_time
+#         speed_kmh = speed_ms * 3.6
+#         velocity_vector_ms = (velocity_x_ms, velocity_y_ms, velocity_z_ms)
+#         velocity_vector_kmh = (velocity_x_ms * 3.6, velocity_y_ms * 3.6, velocity_z_ms * 3.6)
+#         speed_kmh = max(0, min(speed_kmh, 300))
+#         speed_ms = speed_kmh / 3.6
+#         max_component_kmh = 150
+#         velocity_vector_kmh = tuple((max(-max_component_kmh, min(max_component_kmh, v)) for v in velocity_vector_kmh))
+#         velocity_vector_ms = tuple((v / 3.6 for v in velocity_vector_kmh))
+#         return (speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh)
 
 class EnhancedRobustTracker:
     """
@@ -242,7 +403,8 @@ class EnhancedRobustTracker:
         self.max_history = max_history
         self.max_disappeared = max_disappeared
         self.camera_code = camera_code
-        self.speed_estimator = SpeedEstimator(fps=CAMERA_CONFIG['fps'], time_step=CAMERA_CONFIG['time_step'])
+        #self.speed_estimator = SpeedEstimator(fps=CAMERA_CONFIG['fps'], time_step=CAMERA_CONFIG['time_step'])
+        self.speed_estimator = SpeedEstimator()
 
     def get_camera_prefix(self):
         """Map camera folder names to their corresponding prefix codes"""
@@ -422,7 +584,9 @@ class EnhancedRobustTracker:
             self.track_history[track_id]['bbox_heights'].append(bbox_height)
             track_data = self.track_history[track_id]
             if len(track_data['positions']) >= 2:
-                speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh = self.speed_estimator.calculate_speed_from_positions(track_data['positions'], track_data['depth_history'], track_data['bbox_heights'])
+                speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh = self.speed_estimator.calculate_speed_from_positions(track_data['positions'], track_data['depth_history'], class_name=track_data['class'])
+                # speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh = self.speed_estimator.calculate_speed_from_positions(track_data['positions'], track_data['depth_history'], track_data['bbox_heights'])
+                
                 if len(track_data['speeds']) > 0:
                     prev_speed = track_data['speeds'][-1]['speed_kmh']
                     smoothed_speed = 0.7 * prev_speed + 0.3 * speed_kmh
@@ -495,7 +659,7 @@ def process_frame_with_depth_and_speed(frame_path, model, vehicle_classes, targe
     if run_dict.get('depth', True) and DEPTH_PRO_AVAILABLE and (depth_model is not None):
         if image is None: pass
         else:
-            depth_map, depth_colormap = estimate_depth(image, depth_model, depth_transform, depth_device)
+            depth_map, depth_colormap = estimate_depth(frame_path, depth_model, depth_transform, depth_device)
             depth_dir = os.path.join(output_base_dir, f'{camera_name}_DepthMaps')
             depth_colormap_dir = os.path.join(output_base_dir, f'{camera_name}_DepthColormaps')
             os.makedirs(depth_dir, exist_ok=True)
