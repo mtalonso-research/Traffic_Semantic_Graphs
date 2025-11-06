@@ -4,10 +4,6 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-# --- NuPlan API imports for ego features ---
-from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
-from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
-
 MAX_VEHICLES_PER_FRAME = None
 
 # ---------------- Utilities ----------------
@@ -86,20 +82,10 @@ def _find_nuplan_data_root(db_path: str) -> str:
     # fallback: three levels up
     return str(Path(db_path).resolve().parents[2])
 
-# ---------------- Dummy Worker for NuPlan builder ----------------
-class DummyWorker:
-    def __init__(self):
-        self.number_of_threads = 0
-    def map(self, fn, inputs):
-        return [fn(x) for x in inputs]
-    def submit(self, fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-# ---------------- Core pipeline ----------------
-def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
+def extract_and_generate_graphs(DB_PATH: str, out_dir_root, sample_step_s: float):
     """
-    Simplified: export one JSON per scene (no episode logic). Pedestrians are their own node type.
-    Returns a list of mapping dictionaries for generated files.
+    Extracts data from a nuPlan .db file, generates graph structures, and saves them as JSON files.
+    This function does NOT require the nuPlan API.
     """
     db_stem = Path(DB_PATH).stem
     db_name = Path(DB_PATH).name
@@ -107,51 +93,21 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
     os.makedirs(OUT_DIR, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
-    cur  = conn.cursor()
+    cur = conn.cursor()
 
     scenes = pd.read_sql_query("SELECT token, name FROM scene ORDER BY ROWID;", conn)
     if scenes.empty:
-        print(f"[{db_stem}] No scenes found.")
         conn.close()
-        return [] # Return empty list
+        return []
 
-    lb_cols   = pd.read_sql_query("PRAGMA table_info(lidar_box);", conn)['name'].tolist()
-    ego_cols  = pd.read_sql_query("PRAGMA table_info(ego_pose);", conn)['name'].tolist()
-    
-    # Setup NuPlan API (for ego lookup)
-    nuplan_root = _find_nuplan_data_root(DB_PATH)
-    builder = NuPlanScenarioBuilder(
-        data_root=nuplan_root,
-        sensor_root=nuplan_root,
-        db_files=[str(Path(DB_PATH).expanduser().resolve())],
-        map_version="nuplan-maps-v1.0",
-        map_root=None,
-    )
-    scenario_filter = ScenarioFilter(
-        scenario_types=None, scenario_tokens=None, log_names=None, map_names=None,
-        num_scenarios_per_type=None, limit_total_scenarios=None, timestamp_threshold_s=0,
-        ego_displacement_minimum_m=0, expand_scenarios=False,
-        remove_invalid_goals=False, shuffle=False,
-    )
-    worker = DummyWorker()
-    scenarios = builder.get_scenarios(scenario_filter, worker=worker)
+    lb_cols = pd.read_sql_query("PRAGMA table_info(lidar_box);", conn)['name'].tolist()
+    ego_cols = pd.read_sql_query("PRAGMA table_info(ego_pose);", conn)['name'].tolist()
 
-    # Build ego lookup (timestamp_us → ego_state)
-    ego_lookup = {}
-    for sc in scenarios:
-        if hasattr(sc, "get_number_of_iterations"):
-            for i in range(sc.get_number_of_iterations()):
-                ego = sc.get_ego_state_at_iteration(i)
-                ego_lookup[int(ego.time_point.time_us)] = ego
-        else:
-            for ego in sc.get_ego_state_iter():
-                ego_lookup[int(ego.time_point.time_us)] = ego
-
-    written_mappings = [] # Changed from written_paths
+    written_mappings = []
 
     for _, sc in scenes.iterrows():
         SCENE_TOKEN = sc["token"]
-        SCENE_NAME  = sc.get("name", None)
+        SCENE_NAME = sc.get("name", None)
 
         frames = pd.read_sql_query("""
             SELECT token AS lidar_pc_token, timestamp
@@ -195,7 +151,6 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
         boxes["t_rel"] = (boxes["frame_timestamp"] - t0_raw) / t_scale
         boxes_sorted = boxes.sort_values(["t_rel", "track_token"]).reset_index(drop=True)
 
-        # ---- Graph construction per scene ----
         ego_nodes, env_nodes = [], []
         veh_nodes, ped_nodes, obj_nodes = [], [], []
         ego_edges, env_edges = [], []
@@ -206,20 +161,19 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
             lpt = frow["lidar_pc_token"]
             ts_us = int(frow["timestamp"])
 
-            ego_state = nearest_ego_state(ts_us, ego_lookup)
             e_sql = nearest_row_by_time(ego_sorted, "t_rel", t) if not ego_sorted.empty else pd.Series(dtype=float)
 
             ego_features = {
-                "x": float(ego_state.rear_axle.x) if ego_state else float(e_sql.get("x")) if pd.notna(e_sql.get("x", np.nan)) else None,
-                "y": float(ego_state.rear_axle.y) if ego_state else float(e_sql.get("y")) if pd.notna(e_sql.get("y", np.nan)) else None,
-                "z": float(getattr(ego_state.rear_axle, "z", np.nan)) if ego_state and pd.notna(getattr(ego_state.rear_axle, "z", np.nan)) else float(e_sql.get("z")) if pd.notna(e_sql.get("z", np.nan)) else None,
-                "vx": float(ego_state.dynamic_car_state.rear_axle_velocity_2d.x) if ego_state else float(e_sql.get("vx")) if pd.notna(e_sql.get("vx", np.nan)) else None,
-                "vy": float(ego_state.dynamic_car_state.rear_axle_velocity_2d.y) if ego_state else float(e_sql.get("vy")) if pd.notna(e_sql.get("vy", np.nan)) else None,
-                "vz": float(e_sql.get("vz")) if pd.notna(e_sql.get("vz", np.nan)) else None,
-                "ax": float(ego_state.dynamic_car_state.rear_axle_acceleration_2d.x) if ego_state else None,
-                "ay": float(ego_state.dynamic_car_state.rear_axle_acceleration_2d.y) if ego_state else None,
-                "heading": float(ego_state.rear_axle.heading) if ego_state else None,
-                "tire_angle": float(ego_state.tire_steering_angle) if ego_state else None,
+                "x": float(e_sql.get("x")) if pd.notna(e_sql.get("x")) else None,
+                "y": float(e_sql.get("y")) if pd.notna(e_sql.get("y")) else None,
+                "z": float(e_sql.get("z")) if pd.notna(e_sql.get("z")) else None,
+                "vx": float(e_sql.get("vx")) if pd.notna(e_sql.get("vx")) else None,
+                "vy": float(e_sql.get("vy")) if pd.notna(e_sql.get("vy")) else None,
+                "vz": float(e_sql.get("vz")) if pd.notna(e_sql.get("vz")) else None,
+                "ax": None,
+                "ay": None,
+                "heading": None,
+                "tire_angle": None,
                 "type": "ego",
             }
             ego_nodes.append({"id": f"ego_{i_f}", "features": ego_features})
@@ -229,9 +183,9 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
                 "features": {"timestamp_raw": ts_us, "time_rel_s": t}
             })
             if i_f > 0:
-                ego_edges.append({"source": f"ego_{i_f-1}", "target": f"ego_{i_f}", "features": {}})
-                env_edges.append({"source": f"env_{i_f-1}", "target": f"env_{i_f}", "features": {}})
-            ego_env_edges.append({"source": f"ego_{i_f}", "target": f"env_{i_f}", "features": {}})
+                ego_edges.append({"source": f"ego_{{i_f-1}}", "target": f"ego_{{i_f}}", "features": {}})
+                env_edges.append({"source": f"env_{{i_f-1}}", "target": f"env_{{i_f}}", "features": {}})
+            ego_env_edges.append({"source": f"ego_{{i_f}}", "target": f"env_{{i_f}}", "features": {}})
 
             subset = boxes_sorted[boxes_sorted["lidar_pc_token"] == lpt]
             if MAX_VEHICLES_PER_FRAME:
@@ -264,7 +218,7 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
                             "type": "vehicle"
                         }
                     })
-                    ego_veh_edges.append({"source": f"ego_{i_f}", "target": vid, "features": {}})
+                    ego_veh_edges.append({"source": f"ego_{{i_f}}", "target": vid, "features": {}})
 
                 elif base_type == "pedestrian":
                     pid = f"pedestrian_{chr(97 + ped_counter)}_{i_f}"
@@ -283,7 +237,7 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
                             "type": "pedestrian"
                         }
                     })
-                    ego_ped_edges.append({"source": f"ego_{i_f}", "target": pid, "features": {}})
+                    ego_ped_edges.append({"source": f"ego_{{i_f}}", "target": pid, "features": {}})
 
                 else:  # object
                     oid = f"object_{chr(97 + obj_counter)}_{i_f}"
@@ -302,7 +256,7 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
                             "type": "object"
                         }
                     })
-                    ego_obj_edges.append({"source": f"ego_{i_f}", "target": oid, "features": {}})
+                    ego_obj_edges.append({"source": f"ego_{{i_f}}", "target": oid, "features": {}})
 
         graph = {
             "nodes": {
@@ -321,7 +275,7 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
                 "ego_to_environment": ego_env_edges
             },
             "metadata": {
-                "graph_id": f"{db_stem[:8]}_scene_{str(SCENE_TOKEN)[:8]}",
+                "graph_id": f"{db_stem[:8]}_scene_{SCENE_TOKEN.hex()[:16]}",
                 "db_file": db_name,
                 "scene_token": str(SCENE_TOKEN),
                 "scene_name": SCENE_NAME,
@@ -334,38 +288,136 @@ def process_db(DB_PATH: str, out_dir_root, sample_step_s: float):
         out_path = os.path.join(OUT_DIR, f"{graph['metadata']['graph_id']}.json")
         with open(out_path, "w") as f:
             json.dump(graph, f, indent=2)
-        
-        # --- MODIFICATION: Store mapping info ---
+
         written_mappings.append({
             "json_file_name": Path(out_path).name,
             "db_name": db_name,
             "scene_token": str(SCENE_TOKEN),
             "scene_name": SCENE_NAME,
-            "temp_path": out_path  # Store the full path for later moving
+            "temp_path": out_path
         })
-        # --- END MODIFICATION ---
 
     conn.close()
-    return written_mappings # Return the list of mappings
+    return written_mappings
+
+def enrich_graphs_with_api_data(mappings: list, db_dir: str, out_dir: str):
+    from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
+    from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
+
+    class DummyWorker:
+        def __init__(self):
+            self.number_of_threads = 0
+        def map(self, fn, inputs):
+            return [fn(x) for x in inputs]
+        def submit(self, fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+    """
+    Enriches previously generated graph JSON files with data from the nuPlan API.
+    """
+    if not mappings:
+        print("No mappings provided for enrichment. Skipping API enrichment.")
+        return
+
+    # Group mappings by db_name to initialize NuPlanScenarioBuilder once per DB
+    db_to_mappings = {}
+    for mapping in mappings:
+        db_name = mapping['db_name']
+        if db_name not in db_to_mappings:
+            db_to_mappings[db_name] = []
+        db_to_mappings[db_name].append(mapping)
+
+    for db_name, db_mappings in tqdm(db_to_mappings.items(), desc="Enriching DBs"):
+        # Find the full path to the DB file
+        db_path = None
+        for p in Path(db_dir).rglob(db_name):
+            db_path = str(p.resolve())
+            break
+        if not db_path:
+            print(f"Warning: Could not find DB file {db_name}. Skipping enrichment for its graphs.")
+            continue
+
+        nuplan_root = _find_nuplan_data_root(db_path)
+        builder = NuPlanScenarioBuilder(
+            data_root=nuplan_root,
+            sensor_root=nuplan_root,
+            db_files=[str(Path(db_path).expanduser().resolve())],
+            map_version="nuplan-maps-v1.0",
+            map_root=None,
+        )
+        scenario_filter = ScenarioFilter(
+            scenario_types=None, scenario_tokens=None, log_names=None, map_names=None,
+            num_scenarios_per_type=None, limit_total_scenarios=None, timestamp_threshold_s=0,
+            ego_displacement_minimum_m=0, expand_scenarios=False,
+            remove_invalid_goals=False, shuffle=False,
+        )
+        worker = DummyWorker()
+        scenarios = builder.get_scenarios(scenario_filter, worker=worker)
+
+        # Build ego lookup (timestamp_us → ego_state) for the current DB
+        ego_lookup = {}
+        for sc in scenarios:
+            if hasattr(sc, "get_number_of_iterations"):
+                for i in range(sc.get_number_of_iterations()):
+                    ego = sc.get_ego_state_at_iteration(i)
+                    ego_lookup[int(ego.time_point.time_us)] = ego
+            else:
+                for ego in sc.get_ego_state_iter():
+                    ego_lookup[int(ego.time_point.time_us)] = ego
+
+        for mapping in db_mappings:
+            json_path = mapping['flat_path'] # Use the flattened path
+            if not json_path or not os.path.exists(json_path):
+                print(f"Warning: JSON file not found at {json_path}. Skipping enrichment.")
+                continue
+
+            with open(json_path, "r") as f:
+                graph = json.load(f)
+
+            # Enrich ego nodes
+            for ego_node in graph['nodes']['ego']:
+                # Assuming ego_node id is like "ego_0", "ego_1", etc.
+                # We need the corresponding timestamp from the environment node
+                # This requires a bit of a lookup or a change in how timestamps are stored
+                # For now, let's assume we can get the timestamp from the env node
+                # This part might need adjustment based on exact graph structure
+                env_node_id = ego_node['id'].replace("ego_", "env_")
+                env_node = next((n for n in graph['nodes']['environment'] if n['id'] == env_node_id), None)
+
+                if env_node and 'timestamp_raw' in env_node['features']:
+                    ts_us = env_node['features']['timestamp_raw']
+                    ego_state = nearest_ego_state(ts_us, ego_lookup)
+
+                    if ego_state:
+                        ego_node['features']['ax'] = float(ego_state.dynamic_car_state.rear_axle_acceleration_2d.x)
+                        ego_node['features']['ay'] = float(ego_state.dynamic_car_state.rear_axle_acceleration_2d.y)
+                        ego_node['features']['heading'] = float(ego_state.rear_axle.heading)
+                        ego_node['features']['tire_angle'] = float(ego_state.tire_steering_angle)
+                        # Update x, y, z, vx, vy, vz if they were None or from SQL only
+                        ego_node['features']['x'] = float(ego_state.rear_axle.x)
+                        ego_node['features']['y'] = float(ego_state.rear_axle.y)
+                        ego_node['features']['z'] = float(getattr(ego_state.rear_axle, "z", np.nan)) if pd.notna(getattr(ego_state.rear_axle, "z", np.nan)) else None
+                        ego_node['features']['vx'] = float(ego_state.dynamic_car_state.rear_axle_velocity_2d.x)
+                        ego_node['features']['vy'] = float(ego_state.dynamic_car_state.rear_axle_velocity_2d.y)
+                    else:
+                        # If ego_state not found, ensure API-specific fields are None
+                        ego_node['features']['ax'] = None
+                        ego_node['features']['ay'] = None
+                        ego_node['features']['heading'] = None
+                        ego_node['features']['tire_angle'] = None
+
+            with open(json_path, "w") as f:
+                json.dump(graph, f, indent=2)
+
+
 
 # ---------------- I/O helpers ----------------
 # --- MODIFICATION: Removed rename_jsons_in_dir function ---
 # It will be replaced by inline logic in load_data
 
-def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0, file_max=None):
-    """
-    db_dir: directory that contains 'nuplan-v1.1/<split>/*.db' (e.g., ../data/raw/NuPlan/train_pittsburgh)
-    time_idx: sampling step in seconds at export time.
-              Use 0 or negative to DISABLE downsampling (use every frame).
-              Use 1 for ~1 Hz (default).
-    file_min, file_max: integer range of DB indices to process, based on sorted order.
-                        Example: file_min=10, file_max=19 processes the 10th–19th DBs.
-                        file_max=None means "to the end".
-    """
-    # --- MODIFICATION: Initialize mapping list ---
+def extract_and_flatten_graphs(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0, file_max=None):
     total_count = 0
     all_mappings = []
-    # --- END MODIFICATION ---
 
     os.makedirs(out_dir, exist_ok=True)
     db_paths = sorted([str(p) for p in Path(db_dir).rglob("*.db")])
@@ -373,26 +425,20 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
     if not db_paths:
         raise RuntimeError(f"No .db files found under: {db_dir}")
 
-    # clamp the bounds safely
     if file_min < 0:
         file_min = 0
     if file_max is None or file_max > n_total:
         file_max = n_total
 
     db_subset = db_paths[file_min:file_max]
-    print(f"Found {n_total} DB files under {db_dir}")
-    print(f"Processing subset {file_min}:{file_max} ({len(db_subset)} DBs)")
 
     failed = []
 
-    for idx, db in enumerate(tqdm(db_subset, desc="DB processing", unit="db", initial=file_min)):
+    for idx, db in enumerate(tqdm(db_subset, desc="DB processing (extraction)", unit="db", initial=file_min)):
         try:
-            print(f"\n[{file_min + idx}] Processing DB: {db}")
-            # --- MODIFICATION: Collect mappings ---
-            mappings_from_db = process_db(db, out_dir, sample_step_s=time_idx)
+            mappings_from_db = extract_and_generate_graphs(db, out_dir, sample_step_s=time_idx)
             all_mappings.extend(mappings_from_db)
             total_count += len(mappings_from_db)
-            # --- END MODIFICATION ---
         except FileNotFoundError as e:
             print(f"⚠️ Skipping {db} — file not found: {e}")
             failed.append((db, str(e)))
@@ -403,8 +449,6 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
             print(f"⚠️ Skipping {db} due to unexpected error: {type(e).__name__}: {e}")
             failed.append((db, str(e)))
 
-    # --- MODIFICATION: Replace flattening logic to use the mapping list ---
-    print(f"\nFlattening {len(all_mappings)} JSON files...")
     for mapping in tqdm(all_mappings, desc="Flattening files"):
         src = mapping['temp_path']
         base_name = mapping['json_file_name']
@@ -412,7 +456,7 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
 
         if not os.path.exists(src):
             print(f"Warning: Source file {src} not found during flattening. Skipping.")
-            mapping['flat_path'] = None # Mark as failed
+            mapping['flat_path'] = None
             continue
 
         if os.path.exists(dst):
@@ -422,14 +466,35 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
                 dst_name = f"{base}_{i}{ext}"
                 dst = os.path.join(out_dir, dst_name)
                 i += 1
-            # Update the filename in the mapping if it changed
             mapping['json_file_name'] = dst_name
         
         shutil.move(src, dst)
-        mapping['flat_path'] = dst # Store the new, flattened path
-    # --- END MODIFICATION ---
+        mapping['flat_path'] = dst
 
-    # Remove now-empty directories
+    # Save mappings for the next step
+    mappings_path = os.path.join(out_dir, "temp_mappings.json")
+    with open(mappings_path, "w") as f:
+        json.dump(all_mappings, f)
+
+    print(f"\n✅ Successfully extracted and flattened {total_count} scenes.")
+    if failed:
+        print("Failed DBs:")
+        for db, err in failed:
+            print(f"  {db}: {err}")
+
+def enrich_and_finalize_graphs(db_dir, out_dir='../data/graphical/nuplan'):
+    mappings_path = os.path.join(out_dir, "temp_mappings.json")
+    if not os.path.exists(mappings_path):
+        print("Error: temp_mappings.json not found. Please run the extraction step first.")
+        return
+
+    with open(mappings_path, "r") as f:
+        all_mappings = json.load(f)
+
+    print("\n--- Step 2: Enriching graphs with NuPlan API data ---")
+    valid_mappings_for_enrichment = [m for m in all_mappings if m.get('flat_path') and os.path.exists(m['flat_path'])]
+    enrich_graphs_with_api_data(valid_mappings_for_enrichment, db_dir, out_dir)
+
     for root, dirs, files in os.walk(out_dir, topdown=False):
         if root != out_dir and not files and not dirs:
             try:
@@ -437,24 +502,20 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
             except OSError as e:
                 print(f"Warning: Could not remove directory {root}: {e}")
 
-    # --- MODIFICATION: Replace rename_jsons_in_dir with inline logic & CSV generation ---
-    print("\nRenaming files and generating mapping CSV...")
+    print("\n--- Step 3: Renaming files and generating mapping CSV ---")
     final_csv_data = []
     
-    # Filter out any files that failed to flatten
-    valid_mappings = [m for m in all_mappings if m.get('flat_path') and os.path.exists(m['flat_path'])]
+    valid_mappings_for_final_processing = [m for m in valid_mappings_for_enrichment if m.get('flat_path') and os.path.exists(m['flat_path'])]
     
-    # Sort by the flattened file path to replicate original rename behavior
-    valid_mappings.sort(key=lambda m: m['flat_path'])
+    valid_mappings_for_final_processing.sort(key=lambda m: m['flat_path'])
 
-    for idx, mapping in enumerate(tqdm(valid_mappings, desc="Renaming files")):
+    for idx, mapping in enumerate(tqdm(valid_mappings_for_final_processing, desc="Renaming files")):
         old_path = mapping['flat_path']
         new_filename = f"{idx}_graph.json"
         new_path = os.path.join(out_dir, new_filename)
         
         try:
             os.rename(old_path, new_path)
-            # Add to CSV data *only* if rename was successful
             final_csv_data.append({
                 "json_file_name": new_filename,
                 "db_name": mapping['db_name'],
@@ -464,21 +525,15 @@ def load_data(db_dir, out_dir='../data/graphical/nuplan', time_idx=1, file_min=0
         except OSError as e:
             print(f"Warning: Could not rename {old_path} to {new_path}: {e}")
 
-    # Save the CSV
     if final_csv_data:
         df = pd.DataFrame(final_csv_data)
-        # Ensure column order
         csv_path = os.path.join(out_dir, "file_mapping.csv")
         df.to_csv(csv_path, index=False, columns=["json_file_name", "db_name", "scene_name", "scene_token"])
         print(f"✅ Mapping CSV saved to {csv_path}")
     else:
         print("No valid files were processed, CSV not generated.")
-    # --- END MODIFICATION ---
 
-    print(f"\n✅ Successfully processed {total_count} scenes (skipped {len(failed)} broken DBs).")
-    if failed:
-        print("Failed DBs:")
-        for db, err in failed:
-            print(f"  {db}: {err}")
-    
-    return total_count # Return the total count as before
+    # Clean up the temporary mappings file
+    os.remove(mappings_path)
+
+    print(f"\n✅ Successfully enriched and finalized graphs.")

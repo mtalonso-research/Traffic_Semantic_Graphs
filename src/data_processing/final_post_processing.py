@@ -1,7 +1,8 @@
 import os
 import json
 import math
-from datetime import datetime
+from datetime import datetime, date
+import holidays
 import re
 from collections import defaultdict
 from tqdm import tqdm
@@ -281,7 +282,9 @@ def env_processing_l2d(input_dir):
                 "time": time,
                 "conditions": conditions,
                 "precipitation": precipitation,
-                "daylight": daylight
+                "daylight": daylight,
+                "weekend": day in [5, 6], # Saturday or Sunday
+                "holiday": False # Cannot determine holiday without year and day of month
             }
 
         with open(fpath, "w") as f:
@@ -355,6 +358,36 @@ def env_processing_nup(input_dir):
         with open(fpath, "r") as f:
             data = json.load(f)
 
+        log_name = data.get('metadata', {}).get('log_name', '')
+        
+        year, month, day_of_month = (None, None, None)
+        if log_name:
+            try:
+                date_parts = log_name.split('.')[:3]
+                year = int(date_parts[0])
+                month = int(date_parts[1])
+                day_of_month = int(date_parts[2])
+            except (ValueError, IndexError):
+                pass
+
+        location = data.get('metadata', {}).get('location', '')
+        country = ''
+        state = ''
+        if 'us' in location:
+            country = 'US'
+            try:
+                state = location.split('-')[1].upper()
+            except IndexError:
+                state = ''
+        elif 'sg' in location:
+            country = 'SG'
+
+        holiday_calendar = None
+        if country == 'US' and state:
+            holiday_calendar = holidays.US(state=state)
+        elif country == 'SG':
+            holiday_calendar = holidays.SG()
+
         envs = data.get("nodes", {}).get("environment", [])
         if not envs:
             continue
@@ -362,7 +395,7 @@ def env_processing_nup(input_dir):
         for env in envs:
             feat = env.get("features", {})
 
-            month = feat.get("month", None)
+            month_feat = feat.get("month", None)
             day_str = feat.get("day_of_week", None)
             day = day_map.get(str(day_str).lower(), None) if day_str else None
             time = parse_time_seconds(feat.get("time_of_day"))
@@ -378,13 +411,27 @@ def env_processing_nup(input_dir):
             desc = feat.get("weather_description", None)
             conditions = map_weather_to_condition(code, desc)
 
+            weekend = False
+            if day in [5, 6]:
+                weekend = True
+
+            holiday = False
+            if year and month and day_of_month and holiday_calendar:
+                try:
+                    current_date = date(year, month, day_of_month)
+                    holiday = current_date in holiday_calendar
+                except ValueError:
+                    pass
+
             env["features"] = {
-                "month": month,
+                "month": month_feat,
                 "day": day,
                 "time": time,
                 "conditions": conditions,
                 "precipitation": precipitation,
-                "daylight": daylight
+                "daylight": daylight,
+                "weekend": weekend,
+                "holiday": holiday
             }
 
         with open(fpath, "w") as f:

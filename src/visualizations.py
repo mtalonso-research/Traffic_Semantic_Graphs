@@ -6,7 +6,7 @@ import json
 import webbrowser
 import os
 from src.utils import extract_frames
-from src.risk_analysis import RiskAnalysis
+from risk_analysis.risk_analysis import RiskAnalysis
 import os
 import webbrowser
 try:
