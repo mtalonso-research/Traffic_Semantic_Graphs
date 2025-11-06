@@ -28,8 +28,7 @@ if not os.environ.get('STRICT_WARNINGS'):
     try:
         from torch.jit import TracerWarning
         warnings.filterwarnings('ignore', category=TracerWarning)
-    except Exception:
-        pass
+    except Exception as e: print(f'Error: {e}')
     warnings.filterwarnings('ignore', message=r'.*torch\.meshgrid.*indexing.*', category=UserWarning)
     warnings.filterwarnings('ignore', message=r'.*Converting a tensor to a Python boolean.*', category=UserWarning)
     warnings.filterwarnings('ignore', message=r'.*results are registered as constants in the trace.*', category=UserWarning)
@@ -48,6 +47,7 @@ def quick_setup_depth_pro(verbose):
         model_path = hf_hub_download(repo_id='apple/DepthPro', filename='depth_pro.pt', local_dir=checkpoint_dir)
         return True
     except Exception as e:
+        print(f'Error: {e}')
         return False
 
 def initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose):
@@ -71,6 +71,7 @@ def initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose):
     except FileNotFoundError as e:
         return try_alternative_download(verbose)
     except Exception as e:
+        print(f'Error: {e}')
         return (None, None, None)
 
 def download_depth_pro_model(verbose):
@@ -85,6 +86,7 @@ def download_depth_pro_model(verbose):
         downloaded_path = hf_hub_download(repo_id='apple/DepthPro', filename='depth_pro.pt', local_dir=checkpoint_dir)
         return True
     except Exception as e:
+        print(f'Error: {e}')
         return False
 
 def try_alternative_download(verbose):
@@ -108,6 +110,7 @@ def try_alternative_download(verbose):
                     os.chdir(original_dir)
         return (None, None, None)
     except Exception as e:
+        print(f'Error: {e}')
         return (None, None, None)
 
 def estimate_depth(image_path, model, transform, device):
@@ -174,6 +177,7 @@ def extract_depth_from_bbox(depth_map, bbox):
                 depth_stats['center_depth'] = float(center_depth)
         return depth_stats
     except Exception as e:
+        print(f'Error: {e}')
         return None
 
 def setting_up(verbose=True):
@@ -181,7 +185,7 @@ def setting_up(verbose=True):
     os.makedirs(checkpoint_dir, exist_ok=True)
     try:
         model_path = hf_hub_download(repo_id='apple/DepthPro', filename='depth_pro.pt', local_dir=checkpoint_dir)
-    except Exception as e: pass
+    except Exception as e: print(f'Error: {e}')
     if os.path.exists('../ml-depth-pro'): 
         sys.path.insert(0, '../ml-depth-pro')
     try:
@@ -472,6 +476,7 @@ class EnhancedRobustTracker:
                 features['dominant_colors'] = dominant_colors
             return features
         except Exception as e:
+            print(f'Error: {e}')
             return None
 
     def calculate_similarity_score(self, hist1, hist2):
@@ -503,6 +508,7 @@ class EnhancedRobustTracker:
                 total_score = 0.7 * total_score + 0.3 * color_sim
             return total_score
         except Exception as e:
+            print(f'Error: {e}')
             return 0
 
     def compare_dominant_colors(self, colors1, colors2):
@@ -676,7 +682,7 @@ def process_frame_with_depth_and_speed(frame_path, model, vehicle_classes, targe
                 for track_id, (bbox, cls_name) in mapped_detections.items():
                     current_detections[track_id] = (bbox, cls_name, None)
                 last_detections_cache[camera_name] = current_detections.copy()
-            except Exception as e: pass
+            except Exception as e: print(f'Error: {e}')
     else:
         try:
             with open(json_path, 'r') as f:
@@ -687,7 +693,8 @@ def process_frame_with_depth_and_speed(frame_path, model, vehicle_classes, targe
                 cls = ann['attributes'].get('class', 'unknown')
                 depth_stats = ann['attributes'].get('depth_stats', None)
                 current_detections[ann['track_id']] = (bbox, cls, depth_stats)
-        except Exception as e:
+        except Exception as e: 
+            print(f'Error: {e}')
             return
     if depth_map is not None:
         for tid in current_detections:
@@ -745,7 +752,7 @@ def process_frame_with_depth_and_speed(frame_path, model, vehicle_classes, targe
         try:
             cv2.imwrite(os.path.join(output_dir, os.path.basename(frame_path)), image)
         except Exception:
-            pass
+            print(f'Error: {e}')
     with open(json_path, 'w') as f:
         json.dump(convert_numpy_types(json_data), f, indent=2)
     return {'frame': os.path.basename(frame_path), 'detections': len(json_data['annotations']), 'path': os.path.join(output_dir, os.path.basename(frame_path)) if image is not None else None, 'json': json_path, 'has_depth': depth_map is not None}
@@ -819,6 +826,7 @@ def initialize_rfdetr_model():
         model = RFDETRBase()
         return model
     except Exception as e:
+        print(f'Error: {e}')
         return None
 
 def rfdetr_detect_objects(model, image, confidence_threshold=0.4):
@@ -841,6 +849,7 @@ def rfdetr_detect_objects(model, image, confidence_threshold=0.4):
                 detection_results[pseudo_track_id] = {'bbox': [x1, y1, x2, y2], 'class_name': class_name, 'confidence': float(confidence), 'class_id': int(class_id)}
         return detection_results
     except Exception as e:
+        print(f'Error: {e}')
         return {}
 
 def map_rfdetr_to_target_classes(detection_results, target_classes):
