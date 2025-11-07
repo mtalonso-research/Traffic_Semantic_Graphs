@@ -6,9 +6,13 @@ import json
 import webbrowser
 import os
 from src.utils import extract_frames
-from risk_analysis.risk_analysis import RiskAnalysis
+from src.risk_analysis.risk_analysis import RiskAnalysis
 import os
 import webbrowser
+import networkx as nx
+import ipycytoscape
+from pyvis.network import Network
+
 try:
     from IPython import get_ipython
 except ImportError:
@@ -355,3 +359,158 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
     else:
         print("Error: Figure was not generated.")
 
+def json_graph_to_networkx(graph_data):
+    G = nx.DiGraph()
+    node_mapping = {}
+    existing_ids = set()
+
+    # Add nodes safely
+    for node_type, node_list in graph_data.get("nodes", {}).items():
+        for i, node in enumerate(node_list):
+            original_id = node.get("id", f"unknown_{len(node_mapping)}")
+
+            # Make IDs unique across duplicates
+            unique_id = original_id
+            while unique_id in existing_ids:
+                unique_id = f"{original_id}_{i}"
+            existing_ids.add(unique_id)
+
+            node_id = f"{unique_id}"
+            node_mapping[original_id] = node_id
+            
+            features = dict(node.get("features", {}))
+            features.update({"id": node_id, "type": node_type})
+            
+            G.add_node(node_id, **features)
+
+    # Add edges, only if nodes exist
+    for edge_type, edge_list in graph_data.get("edges", {}).items():
+        for edge in edge_list:
+            src = edge.get("source")
+            tgt = edge.get("target")
+            src_id = node_mapping.get(src)
+            tgt_id = node_mapping.get(tgt)
+
+            # Skip invalid edges
+            if src_id is None or tgt_id is None:
+                continue
+
+            attributes = dict(edge.get("features", {}))
+            attributes["interaction"] = edge_type
+            G.add_edge(src_id, tgt_id, **attributes)
+
+    return G, node_mapping
+
+def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
+    type_color_map = {
+        'vehicle': '#1f77b4',
+        'pedestrian': '#ff7f0e',
+        'environment': '#2ca02c',
+        'ego': '#FF0000'
+    }
+
+    G_combined = nx.DiGraph()
+    framewise_nodes = []
+
+    # Combine all frames
+    for frame_key, graph_data in graphs_by_frame.items():
+        G_frame, node_mapping = json_graph_to_networkx(graph_data)
+        G_combined.update(G_frame)
+        framewise_nodes.append(node_mapping)
+
+    # Temporal edges
+    for i in range(len(framewise_nodes) - 1):
+        for orig_id in framewise_nodes[i]:
+            if orig_id in framewise_nodes[i + 1]:
+                G_combined.add_edge(
+                    framewise_nodes[i][orig_id],
+                    framewise_nodes[i + 1][orig_id],
+                    interaction="temporal"
+                )
+
+    # Add hover tooltips to nodes
+    for node, attrs in G_combined.nodes(data=True):
+        title = f"ID: {attrs.get('id', 'N/A')}\nType: {attrs.get('type', 'N/A')}"
+        features = attrs.copy()
+        features.pop('id', None)
+        features.pop('type', None)
+        for key, value in features.items():
+            title += f"\n{key}: {value}"
+        G_combined.nodes[node]['title'] = title
+
+    # Add semantic tags node
+    tag_dir_base = 'data/semantic_tags'
+    if 'L2D' in graphs_by_frame['0']['metadata']['source_files']['parquet']:
+        tag_dir = os.path.join(tag_dir_base, 'L2D')
+    elif 'nuplan' in graphs_by_frame['0']['metadata']['source_files']['parquet']:
+        tag_dir = os.path.join(tag_dir_base, 'nuplan')
+    else:
+        tag_dir = None
+
+    if tag_dir:
+        tag_file_path = os.path.join(tag_dir, f"episode_{episode_num:06d}.json")
+        if os.path.exists(tag_file_path):
+            with open(tag_file_path, 'r') as f:
+                tags_content = f.read()
+            
+            G_combined.add_node(
+                "semantic_tags",
+                title=tags_content,
+                label="Semantic Tags",
+                color="#9467bd", # purple
+                shape="star"
+            )
+
+    if is_in_jupyter():
+        # Render graph in Jupyter
+        cyto = ipycytoscape.CytoscapeWidget()
+        cyto.graph.add_graph_from_networkx(G_combined)
+
+        # Node styling
+        for node in cyto.graph.nodes:
+            node.data['label'] = node.data.get('id', '?')
+            node.data['tooltip'] = '\n'.join(f"{k}: {v}" for k, v in node.data.items() if k != 'id')
+            node_type = node.data.get('type', 'unknown')
+            node.data['color'] = type_color_map.get(node_type, '#d3d3d3')
+
+        # Edge styling
+        for edge in cyto.graph.edges:
+            edge.data['tooltip'] = '\n'.join(f"{k}: {v}" for k, v in edge.data.items() if k not in ['source', 'target'])
+
+        # Apply style
+        cyto.set_style([
+            {'selector': 'node',
+             'style': {
+                 'label': 'data(label)',
+                 'background-color': 'data(color)',
+                 'width': '25',
+                 'height': '25',
+                 'font-size': '8px'
+             }},
+            {'selector': 'edge',
+             'style': {
+                 'label': 'data(interaction)',
+                 'width': 1,
+                 'line-color': '#ccc',
+                 'target-arrow-color': '#ccc',
+                 'target-arrow-shape': 'triangle',
+                 'font-size': '6px'
+             }}
+        ])
+        return cyto
+    else:
+        # Generate and save an HTML file
+        net = Network(notebook=False, directed=True)
+        net.from_nx(G_combined)
+
+        # Create visualizations directory if it doesn't exist
+        output_dir = "visualizations"
+        os.makedirs(output_dir, exist_ok=True)
+        file_path = os.path.join(output_dir, f"episode_{episode_num}_graph.html")
+
+        net.write_html(file_path)
+        print(f"Graph visualization saved to {file_path}")
+        
+        # Open the HTML file in the default web browser
+        webbrowser.open(f"file://{os.path.realpath(file_path)}")
+        return None

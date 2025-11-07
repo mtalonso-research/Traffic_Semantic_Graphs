@@ -128,15 +128,22 @@ def enrich_dataframe_with_osm_tags(df, lat_col="lat", lon_col="lon", time_sleep=
 def preprocess_df_columns(df):
     df = df.apply(expand_columns,axis=1)
 
-    # Convert the UNIX timestamp to datetime
-    df['obs_datetime'] = pd.to_datetime(df['observation.state.timestamp'])
-
     # Extract components
-    df['month'] = df['obs_datetime'].dt.month_name()
-    df['day_of_week'] = df['obs_datetime'].dt.day_name()
-    df['time_of_day'] = df['obs_datetime'].dt.strftime('%H:%M:%S')
+    timestamp_unit = 'ns' 
+    local_timezone = 'Europe/Berlin' 
 
-    #do = {'policy':df['task.policy'].iloc[0],'instructions':df['task.instructions'].iloc[0]}
+    # 1. Convert the UNIX timestamp to a UTC datetime object
+    df['obs_datetime'] = pd.to_datetime(
+        df['observation.state.timestamp'], 
+        unit=timestamp_unit,  # Correctly interprets the number
+        utc=True              # Flags this time as being in UTC
+    )
+    # 2. Convert from UTC to your local German time
+    df['obs_datetime_local'] = df['obs_datetime'].dt.tz_convert(local_timezone)
+    # 3. Extract components from the LOCAL datetime
+    df['month'] = df['obs_datetime_local'].dt.month_name()
+    df['day_of_week'] = df['obs_datetime_local'].dt.day_name()
+    df['time_of_day'] = df['obs_datetime_local'].dt.strftime('%H:%M:%S')
 
     df = df.drop(columns=[
         "observation.state.vehicle",

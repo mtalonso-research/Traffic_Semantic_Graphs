@@ -49,8 +49,7 @@ def generate_graphs(
     min_ep,
     max_ep=-1,
     source_data_dir='../data/processed/L2D',
-    processed_frame_dir='../data/processed_frames/L2D',      # ORIGINAL JSONs
-    lane_frame_dir='../data/processed_frames/L2D_lanes',                # NEW: lane JSON root 
+    processed_frame_dir='../data/annotations/L2D',      # Filtered annotation JSONs
     output_dir='../data/graphical/L2D'):
 
     # Ensure target directories exist
@@ -65,16 +64,14 @@ def generate_graphs(
 
     for ep_num in tqdm(iterable):
         #try:
-            parquet_path, aux_path, lane_path = directory_lookup(
+            parquet_path, aux_path = directory_lookup(
                 ep_num,
                 source_data_dir,
-                processed_frame_dir,
-                lane_frame_dir
+                processed_frame_dir
             )
             graph_dict = build_graph_json(
                 parquet_path=parquet_path,
                 aux_paths=aux_path,            # original per-frame JSONs
-                lane_paths=lane_path,          # NEW: lane per-frame JSONs
                 image_lookup=image_lookup,
                 graph_id=f"scene_{ep_num:06d}"
             )
@@ -85,22 +82,13 @@ def generate_graphs(
         #except Exception as e:
         #    print(f'Problems with episode {ep_num}: {e}')
 
-def directory_lookup(ep_num,source_data_dir,processed_frame_dir,lane_frame_dir):
+def directory_lookup(ep_num,source_data_dir,processed_frame_dir):
     parquet_path = os.path.join(source_data_dir,f'episode_{ep_num:06d}.parquet')
     df = load_and_restore_parquet(parquet_path)
     aux_path = {}
     for frame_idx in range(len(df)):
-        aux_path[str(frame_idx)] = os.path.join(processed_frame_dir,f"Episode{ep_num:06d}/front_left_Annotations",f'frame_{frame_idx:05d}.json')
-    # NEW lane per-frame JSONs
-    lane_path = {}
-    for frame_idx in range(len(df)):
-        lane_path[str(frame_idx)] = os.path.join(
-            lane_frame_dir,
-            f"Episode{ep_num:06d}",
-            "front_left_Enhanced_LaneAnnotations",        # <-- adjust to your actual folder name
-            f'frame_{frame_idx:05d}.json'
-        )
-    return parquet_path,aux_path,lane_path
+        aux_path[str(frame_idx)] = os.path.join(processed_frame_dir, f"Episode{ep_num:06d}", f'frame_{frame_idx:05d}.json')
+    return parquet_path,aux_path
 
 def image_lookup(frame_idx: str) -> str:
     return f"L2D_data/camera/chunk-000/episode_000000/observation.images.front_left/frame_{frame_idx:05}.jpg"
@@ -116,7 +104,6 @@ def build_graph_json(
     image_lookup: Callable[[str], str],
     output_path: Optional[str | Path] = None,
     graph_id: str | None = None,
-    lane_paths: Optional[Dict[str, str | Path]] = None,   # NEW: separate lane JSONs
 ) -> Dict[str, Any]:
 
     parquet_path = Path(parquet_path)
@@ -126,9 +113,6 @@ def build_graph_json(
 
     # Original per-frame JSONs (speed/depth/etc.)
     aux_data = _load_aux_data(aux_paths)
-
-    # NEW: lane per-frame JSONs (lane detection + vehicle lane classification)
-    lane_data = _load_aux_data(lane_paths) if lane_paths else {}
 
     graph: Dict[str, Any] = {
         "nodes": {"ego": [], "vehicle": [], "pedestrian": [], "environment": []},
@@ -144,7 +128,6 @@ def build_graph_json(
             "source_files": {
                 "parquet": str(parquet_path),
                 **{k: str(v) for k, v in (aux_paths or {}).items()},
-                **({f"lane_{k}": str(v) for k, v in (lane_paths or {}).items()}),
             },
         },
     }
@@ -191,14 +174,8 @@ def build_graph_json(
         graph["nodes"]["environment"].append({"id": env_id, "features": env_features})
 
         # --- Entities: vehicles & pedestrians (UPDATED) ---
-        # Keep object list from the ORIGINAL aux (so we retain speed/depth/etc.)
         frame_record = aux_data.get(frame_id, {}) or {}
         frame_annotations = frame_record.get("annotations") or []
-
-        # Lane info may exist ONLY in the new lane JSONs — index by track_id
-        lane_record = lane_data.get(frame_id, {}) or {}
-        vlc = lane_record.get("vehicle_lane_classification") or {}
-        lane_index = { (v.get("track_id") or ""): v for v in (vlc.get("vehicles") or []) }
 
         for obj in frame_annotations:
             attrs = (obj.get("attributes") or {})
@@ -209,22 +186,30 @@ def build_graph_json(
 
             node_id = f"{track_id}_{frame_id}"
 
-            if obj_class == "car":
+            if track_id.startswith("Ped"):
                 speed_info = (attrs.get("speed_info") or {})
+                depth_stats = (attrs.get("depth_stats") or {})
+                dist_to_ego = depth_stats.get("mean_depth")
 
-                # Pull lane-related fields. They may be present in the ORIGINAL attributes (rare for you),
-                # but we fall back to lane_index built from the NEW lane JSONs.
-                lane_entry = lane_index.get(track_id, {})  # e.g., {"lane_classification": "...", "overlap_ratio": ...}
+                ped_features = {
+                    "speed_ms":     speed_info.get("speed_ms"),
+                    "speed_kmh":    speed_info.get("speed_kmh"),
+                    "velocity_ms":  speed_info.get("velocity_vector_ms"),
+                    "velocity_kmh": speed_info.get("velocity_vector_kmh"),
+                    "accel_ms2":    speed_info.get("acceleration_vector_ms")
+                                    or speed_info.get("accel_vector_ms")
+                                    or speed_info.get("acceleration_ms2"),
+                    "dist_to_ego": dist_to_ego,
+                }
 
-                lane_classification = (
-                    attrs.get("lane_classification")
-                    or lane_entry.get("lane_classification")
-                )
-                lane_overlap_ratio = attrs.get("lane_overlap_ratio")
-                if lane_overlap_ratio is None:
-                    lane_overlap_ratio = lane_entry.get("overlap_ratio")
-                in_ego_lane = attrs.get("in_ego_lane")
-                ego_lane_available = attrs.get("ego_lane_available")
+                # Prune None to keep JSON tidy
+                ped_features = {k: v for k, v in ped_features.items() if v is not None}
+
+                graph["nodes"]["pedestrian"].append({"id": node_id, "features": ped_features})
+            elif obj_class in ["car", "truck", "bus", "van", "motorcycle", "bicycle"]:
+                speed_info = (attrs.get("speed_info") or {})
+                depth_stats = (attrs.get("depth_stats") or {})
+                dist_to_ego = depth_stats.get("mean_depth")
 
                 veh_features = {
                     "speed_ms":     speed_info.get("speed_ms"),
@@ -234,17 +219,8 @@ def build_graph_json(
                     "accel_ms2":    speed_info.get("acceleration_vector_ms")
                                     or speed_info.get("accel_vector_ms")
                                     or speed_info.get("acceleration_ms2"),
-
-                    # --- NEW lane features (from lane JSONs) ---
-                    "lane_classification": lane_classification,      # e.g. "in_lane", "out_of_lane_left"
-                    "lane_overlap_ratio":  lane_overlap_ratio,       # float [0,1]
-                    "in_ego_lane":         in_ego_lane,              # bool if provided
-                    "ego_lane_available":  ego_lane_available,       # bool if provided
+                    "dist_to_ego": dist_to_ego,
                 }
-
-                # Optional: include distance if the lane JSON provides it
-                if lane_entry.get("distance_m") is not None:
-                    veh_features["distance_m"] = lane_entry["distance_m"]
 
                 # Prune None to keep JSON tidy
                 veh_features = {k: v for k, v in veh_features.items() if v is not None}
@@ -350,26 +326,19 @@ def _add_ego_entity_edges(graph: Dict[str, Any], aux: Dict[str, Any]) -> None:
 
             nid = f"{tid}_{frame_id}"
 
-            if cls == "car":
-                # copy edge feature onto vehicle node
-                node = veh_map.get(nid)
-                if node is not None:
-                    prev = node["features"].get("dist_to_ego", None)
-                    node["features"]["dist_to_ego"] = min(prev, dist) if isinstance(prev, (int, float)) else dist
-
+            if tid.startswith("Ped"):
+                graph["edges"]["ego_to_pedestrian"].append({
+                    "source": ego_node["id"],
+                    "target": nid,
+                    "features": {"distance": dist},
+                })
+            elif cls in ["car", "truck", "bus", "van", "motorcycle", "bicycle"]:
                 graph["edges"]["ego_to_vehicle"].append({
                     "source": ego_node["id"],
                     "target": nid,
                     "features": {"distance": dist},
                 })
-
             elif cls == "pedestrian":
-                # copy edge feature onto pedestrian node
-                node = ped_map.get(nid)
-                if node is not None:
-                    prev = node["features"].get("dist_to_ego", None)
-                    node["features"]["dist_to_ego"] = min(prev, dist) if isinstance(prev, (int, float)) else dist
-
                 graph["edges"]["ego_to_pedestrian"].append({
                     "source": ego_node["id"],
                     "target": nid,
