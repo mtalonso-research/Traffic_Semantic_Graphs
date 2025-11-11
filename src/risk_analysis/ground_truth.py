@@ -1,12 +1,10 @@
-# Description: This file contains functions for extracting ground truth risk labels from the NuPlan dataset.
-
 import json
 import os
 from typing import Any, Dict, List, Tuple
 import pandas as pd
 from tqdm import tqdm
-
 import numpy as np
+import glob
 
 from nuplan.common.actor_state.ego_state import EgoState
 from nuplan.common.actor_state.state_representation import StateSE2, StateVector2D, TimePoint
@@ -29,19 +27,26 @@ from nuplan.common.actor_state.scene_object import SceneObjectMetadata
 from src.risk_analysis.mock_map_api import MockMapFactory
 
 
-def from_scene_tracked_object(scene: Dict[str, Any], object_type: TrackedObjectType) -> TrackedObject:
+def from_scene_tracked_object(scene, object_type):
     """
     Convert scene to a TrackedObject.
-    :param scene: scene of an agent.
-    :param object_type: type of the resulting object.
-    :return Agent extracted from a scene.
+    
+    Args:
+        scene (Dict[str, Any]): scene of an agent.
+        object_type (TrackedObjectType): type of the resulting object.
+        
+    Returns:
+        TrackedObject: Agent extracted from a scene.
     """
+    # Step 1: Extract the token, box, pose, and size from the scene
     token = scene['id']
     box = scene['box']
     pose = box['pose']
     size = box['size'] if 'size' in box.keys() else [0.5, 0.5]
     default_height = 1.5
     box = OrientedBox(StateSE2(*pose), width=size[0], length=size[1], height=default_height)
+    
+    # Step 2: Create the TrackedObject
     if object_type in AGENT_TYPES:
         return Agent(
             metadata=SceneObjectMetadata(token=str(token), track_token=str(token), track_id=token, timestamp_us=0),
@@ -57,14 +62,21 @@ def from_scene_tracked_object(scene: Dict[str, Any], object_type: TrackedObjectT
         )
 
 
-def from_scene_to_tracked_objects(scene: Dict[str, Any]) -> TrackedObjects:
+def from_scene_to_tracked_objects(scene):
     """
     Convert scene["world"] into boxes
-    :param scene: scene["world"] coming from json
-    :return List of boxes representing all agents
+    
+    Args:
+        scene (Dict[str, Any]): scene["world"] coming from json
+        
+    Returns:
+        TrackedObjects: List of boxes representing all agents
     """
+    # Step 1: Check if the scene contains the "world" key
     if "world" in scene.keys():
         raise ValueError("You need to pass only the 'world' field of scene, not the whole dict!")
+    
+    # Step 2: Convert the scene to a list of TrackedObjects
     tracked_objects: List[TrackedObject] = []
     scene_labels_map = {
         'vehicles': TrackedObjectType.VEHICLE,
@@ -80,15 +92,18 @@ def from_scene_to_tracked_objects(scene: Dict[str, Any]) -> TrackedObjects:
     return TrackedObjects(tracked_objects)
 
 
-def setup_history(scene: Dict[str, Any], scenario: MockAbstractScenario) -> SimulationHistory:
+def setup_history(scene, scenario):
     """
-    Mock the history with a mock scenario. The scenario contains the map api, and markers present in the scene are
-    used to build a list of ego poses.
-    :param scene: The json scene.
-    :param scenario: Scenario object.
-    :return The mock history.
+    Mock the history with a mock scenario.
+    
+    Args:
+        scene (Dict[str, Any]): The json scene.
+        scenario (MockAbstractScenario): Scenario object.
+        
+    Returns:
+        SimulationHistory: The mock history.
     """
-    # Update expert driving if exist in .json file
+    # Step 1: Update expert driving if it exists in the .json file
     if 'expert_ego_states' in scene:
         expert_ego_states = scene['expert_ego_states']
         expert_egos = []
@@ -116,10 +131,10 @@ def setup_history(scene: Dict[str, Any], scenario: MockAbstractScenario) -> Simu
                 iteration : iteration + time_horizon + 1 : time_horizon // num_samples
             ][1 : num_samples + 1]
 
-    # Load map
+    # Step 2: Load the map
     map_api = MockMapFactory().build_map_from_name('')
 
-    # Extract Agent Box
+    # Step 3: Extract Agent Box
     tracked_objects = from_scene_to_tracked_objects(scene['world'])
     for tracked_object in tracked_objects:
         tracked_object._track_token = tracked_object.token
@@ -129,7 +144,7 @@ def setup_history(scene: Dict[str, Any], scenario: MockAbstractScenario) -> Simu
     ego_y = ego_pose[1]
     ego_heading = ego_pose[2]
 
-    # Add both ego states and agents in the current timestamps
+    # Step 4: Add both ego states and agents in the current timestamps
     ego_states = []
     observations = []
     ego_state = EgoState.build_from_rear_axle(
@@ -143,7 +158,7 @@ def setup_history(scene: Dict[str, Any], scenario: MockAbstractScenario) -> Simu
     ego_states.append(ego_state)
     observations.append(DetectionsTracks(tracked_objects))
 
-    # Add both ego states and agents in the future timestamp
+    # Step 5: Add both ego states and agents in the future timestamp
     ego_future_states: List[Dict[str, Any]] = scene['ego_future_states'] if 'ego_future_states' in scene else []
     world_future_states: List[Dict[str, Any]] = scene['world_future_states'] if 'world_future_states' in scene else []
     assert len(ego_future_states) == len(world_future_states), (
@@ -172,30 +187,27 @@ def setup_history(scene: Dict[str, Any], scenario: MockAbstractScenario) -> Simu
         ego_states.append(ego_state)
         observations.append(DetectionsTracks(future_tracked_objects))
 
-    # Update the default Mock scenario duration and end_time based on the number of ego_states in the scene
     if ego_states:
         scenario.get_number_of_iterations = lambda: len(ego_states)
 
-    # Add simulation iterations and trajectory for each iteration
+    # Step 6: Add simulation iterations and trajectory for each iteration
     simulation_iterations = []
     trajectories = []
     for index, ego_state in enumerate(ego_states):
         simulation_iterations.append(SimulationIteration(ego_state.time_point, index))
-        # Create a dummy history buffer
         history_buffer = SimulationHistoryBuffer.initialize_from_list(
             buffer_size=10,
             ego_states=[ego_states[index]],
             observations=[observations[index]],
             sample_interval=1,
         )
-        # Create trajectory using simple planner
         planner_input = PlannerInput(
             iteration=SimulationIteration(ego_states[index].time_point, 0), history=history_buffer
         )
         planner = SimplePlanner(horizon_seconds=10.0, sampling_time=1, acceleration=[0.0, 0.0])
         trajectories.append(planner.compute_planner_trajectory(planner_input))
 
-    # Create simulation histories
+    # Step 7: Create simulation histories
     history = SimulationHistory(map_api, scenario.get_mission_goal())
     for ego_state, simulation_iteration, trajectory, observation in zip(
         ego_states, simulation_iterations, trajectories, observations
@@ -213,16 +225,22 @@ def setup_history(scene: Dict[str, Any], scenario: MockAbstractScenario) -> Simu
     return history
 
 
-def build_mock_history_scenario_test(scene: Dict[str, Any]) -> Tuple[SimulationHistory, MockAbstractScenario]:
+def build_mock_history_scenario_test(scene):
     """
     A common template to create a test history and scenario.
-    :param scene: A json format to represent a scene.
-    :return The mock history and scenario.
+    
+    Args:
+        scene (Dict[str, Any]): A json format to represent a scene.
+        
+    Returns:
+        Tuple[SimulationHistory, MockAbstractScenario]: The mock history and scenario.
     """
+    # Step 1: Get the goal pose
     goal_pose = None
     if 'goal' in scene and 'pose' in scene['goal'] and scene['goal']['pose']:
         goal_pose = StateSE2(x=scene['goal']['pose'][0], y=scene['goal']['pose'][1], heading=scene['goal']['pose'][2])
-    # Set the initial timepoint and time_step from the scene
+    
+    # Step 2: Set the initial timepoint and time_step from the scene
     if (
         'ego' in scene
         and 'time_us' in scene['ego']
@@ -237,17 +255,26 @@ def build_mock_history_scenario_test(scene: Dict[str, Any]) -> Tuple[SimulationH
         mock_abstract_scenario = MockAbstractScenario()
     if goal_pose is not None:
         mock_abstract_scenario.get_mission_goal = lambda: goal_pose
+    
+    # Step 3: Setup the history
     history = setup_history(scene, mock_abstract_scenario)
 
     return history, mock_abstract_scenario
 
 
-def _create_scene_from_graph(graph_data: Dict[str, Any]) -> Dict[str, Any]:
+def _create_scene_from_graph(graph_data):
     """
     Converts a graph JSON dictionary to a scene dictionary compatible with the nuPlan devkit.
+    
+    Args:
+        graph_data (Dict[str, Any]): The graph JSON dictionary.
+        
+    Returns:
+        Dict[str, Any]: The scene dictionary.
     """
+    # Step 1: Initialize the scene dictionary
     scene = {
-        "map": {"area": "us-ma-boston"},  # Assuming boston for now
+        "map": {"area": "us-ma-boston"},
         "ego": {},
         "world": {'vehicles':[], 'bicycles':[], 'pedestrians':[]},
         "ego_future_states": [],
@@ -260,31 +287,30 @@ def _create_scene_from_graph(graph_data: Dict[str, Any]) -> Dict[str, Any]:
     if not ego_nodes:
         return scene
 
-    # Set initial ego state
+    # Step 2: Set the initial ego state
     initial_ego_node = ego_nodes[0]["features"]
     scene["ego"] = {
-        "time_us": 0,  # Placeholder
+        "time_us": 0,
         "pose": [initial_ego_node["x"], initial_ego_node["y"], initial_ego_node["heading"]],
         "velocity": [initial_ego_node["vx"], initial_ego_node["vy"]],
         "acceleration": [initial_ego_node["ax"], initial_ego_node["ay"]]
     }
 
-    # Set expert ego states
+    # Step 3: Set the expert ego states
     expert_ego_states = []
     for i, ego_node in enumerate(ego_nodes):
         features = ego_node["features"]
         expert_ego_states.append({
-            "time_us": i * 100000,  # Assuming 10Hz
+            "time_us": i * 100000,
             "pose": [features["x"], features["y"], features["heading"]],
             "velocity": [features["vx"], features["vy"]],
             "acceleration": [features["ax"], features["ay"]]
         })
     scene["expert_ego_states"] = expert_ego_states
 
-    # Set future ego states (same as expert for now)
     scene["ego_future_states"] = expert_ego_states[1:]
 
-    # Set world states
+    # Step 4: Set the world states
     actor_nodes = graph_data.get("nodes", {}).get("actor", [])
     if actor_nodes:
         for actor_node in actor_nodes:
@@ -298,20 +324,23 @@ def _create_scene_from_graph(graph_data: Dict[str, Any]) -> Dict[str, Any]:
                 'speed': np.linalg.norm([features['vx'], features['vy']])
             })
 
-    # Set future world states
     for i in range(len(expert_ego_states) - 1):
         scene['world_future_states'].append({'vehicles':[], 'bicycles':[], 'pedestrians':[]})
 
     return scene
 
 
-def extract_ground_truth(graph_file_path: str) -> Dict[str, Any]:
+def extract_ground_truth(graph_file_path):
     """
     Extracts ground truth risk labels for a single NuPlan graph JSON file.
 
-    :param graph_file_path: Path to the graph JSON file.
-    :return: A dictionary containing the extracted ground truth labels.
+    Args:
+        graph_file_path (str): Path to the graph JSON file.
+        
+    Returns:
+        Dict[str, Any]: A dictionary containing the extracted ground truth labels.
     """
+    # Step 1: Load the graph data
     with open(graph_file_path, "r") as f:
         graph_data = json.load(f)
 
@@ -319,6 +348,7 @@ def extract_ground_truth(graph_file_path: str) -> Dict[str, Any]:
 
     history, scenario = build_mock_history_scenario_test(scene)
 
+    # Step 2: Compute the metrics
     ego_lane_change_metric = EgoLaneChangeStatistics('ego_lane_change_statistics', 'Planning', max_fail_rate=0.3)
     _ = ego_lane_change_metric.compute(history, scenario)
 
@@ -338,6 +368,7 @@ def extract_ground_truth(graph_file_path: str) -> Dict[str, Any]:
     )
     ttc_results = time_to_collision_metric.compute(history, scenario)
 
+    # Step 3: Return the ground truth
     ground_truth = {
         "collisions": {
             "statistics": [stat.serialize() for stat in collision_results[0].statistics],
@@ -351,32 +382,30 @@ def extract_ground_truth(graph_file_path: str) -> Dict[str, Any]:
 
     return ground_truth
 
-
-import pandas as pd
-from tqdm import tqdm
-import glob
-
-def analyze_directory(directory_path: str) -> pd.DataFrame:
+def analyze_directory(directory_path):
     """
     Runs the ground truth risk analysis for all JSON files in a directory and returns a DataFrame.
 
-    :param directory_path: Path to the directory containing the graph JSON files.
-    :return: A pandas DataFrame with the analysis results.
+    Args:
+        directory_path (str): Path to the directory containing the graph JSON files.
+        
+    Returns:
+        pd.DataFrame: A pandas DataFrame with the analysis results.
     """
+    # Step 1: Get all the graph files
     graph_files = glob.glob(os.path.join(directory_path, '*.json'))
     results = []
 
+    # Step 2: Analyze each file
     for graph_file in tqdm(graph_files, desc="Analyzing files"):
         try:
             ground_truth = extract_ground_truth(graph_file)
             
-            # Extract relevant statistics
             collision_stat = ground_truth['collisions']['statistics'][0]['value']
             min_ttc = ground_truth['time_to_collision']['statistics'][0]['value']
 
-            # Determine risk level
             risk_level = 'low'
-            if not collision_stat: # Collision occurred
+            if not collision_stat:
                 risk_level = 'high'
             elif min_ttc < 2:
                 risk_level = 'high'

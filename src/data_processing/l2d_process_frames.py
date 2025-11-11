@@ -22,7 +22,6 @@ last_detections_cache = {}
 
 VERBOSE_MODE = False
 
-# --- Warning handling (quiet known noisy third-party warnings) ---
 import os, warnings
 if not os.environ.get('STRICT_WARNINGS'):
     try:
@@ -34,10 +33,17 @@ if not os.environ.get('STRICT_WARNINGS'):
     warnings.filterwarnings('ignore', message=r'.*results are registered as constants in the trace.*', category=UserWarning)
     warnings.filterwarnings('ignore', message=r'.*Iterating over a tensor might cause the trace to be incorrect.*', category=UserWarning)
     warnings.filterwarnings('ignore', message=r'.*loss_type=None.*ForCausalLMLoss.*', category=UserWarning)
-# --- end warning handling ---
 
 def quick_setup_depth_pro(verbose):
-    """Quick setup function to download Depth Pro model"""
+    """
+    Quick setup function to download Depth Pro model
+    
+    Args:
+        verbose (bool): Whether to print verbose output.
+        
+    Returns:
+        bool: True if the model was downloaded successfully, False otherwise.
+    """
     if not os.path.exists('./ml-depth-pro'):
         return False
     checkpoint_dir = './ml-depth-pro/checkpoints'
@@ -46,12 +52,21 @@ def quick_setup_depth_pro(verbose):
         from huggingface_hub import hf_hub_download
         model_path = hf_hub_download(repo_id='apple/DepthPro', filename='depth_pro.pt', local_dir=checkpoint_dir)
         return True
-    except Exception as e:
-        print(f'Error: {e}')
-        return False
+    except Exception as e: print(f'Error: {e}')
+    return False
 
 def initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose):
-    """Initialize the Depth Pro model"""
+    """
+    Initialize the Depth Pro model
+    
+    Args:
+        DEPTH_PRO_AVAILABLE (bool): Whether the Depth Pro library is available.
+        depth_pro (module): The Depth Pro module.
+        verbose (bool): Whether to print verbose output.
+        
+    Returns:
+        tuple: A tuple containing the model, transform, and device.
+    """
     if not DEPTH_PRO_AVAILABLE:
         return (None, None, None)
     try:
@@ -75,7 +90,15 @@ def initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose):
         return (None, None, None)
 
 def download_depth_pro_model(verbose):
-    """Download Depth Pro model if not exists"""
+    """
+    Download Depth Pro model if not exists
+    
+    Args:
+        verbose (bool): Whether to print verbose output.
+        
+    Returns:
+        bool: True if the model was downloaded successfully, False otherwise.
+    """
     checkpoint_dir = './ml-depth-pro/checkpoints'
     model_path = os.path.join(checkpoint_dir, 'depth_pro.pt')
     if os.path.exists(model_path):
@@ -90,7 +113,15 @@ def download_depth_pro_model(verbose):
         return False
 
 def try_alternative_download(verbose):
-    """Try alternative method to get Depth Pro working"""
+    """
+    Try alternative method to get Depth Pro working
+    
+    Args:
+        verbose (bool): Whether to print verbose output.
+        
+    Returns:
+        tuple: A tuple containing the model, transform, and device.
+    """
     try:
         import subprocess
         script_path = './ml-depth-pro/get_pretrained_models.sh'
@@ -114,20 +145,28 @@ def try_alternative_download(verbose):
         return (None, None, None)
 
 def estimate_depth(image_path, model, transform, device):
-    """Estimate depth using Depth Pro with proper focal length"""
+    """
+    Estimate depth using Depth Pro with proper focal length
+    
+    Args:
+        image_path (str): The path to the image.
+        model (torch.nn.Module): The Depth Pro model.
+        transform (torchvision.transforms.Compose): The transform to apply to the image.
+        device (torch.device): The device to run the model on.
+        
+    Returns:
+        tuple: A tuple containing the depth map and the depth colormap.
+    """
     if model is None:
         return None, None
     try:
         import depth_pro
-        # Use depth_pro's load_rgb to get focal length
         image, _, f_px = depth_pro.load_rgb(image_path)
         image_tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
-            prediction = model.infer(image_tensor, f_px=f_px)  # Pass f_px!
+            prediction = model.infer(image_tensor, f_px=f_px)
             depth = prediction["depth"]
-        # Convert to numpy
         depth_map = depth.squeeze().cpu().numpy()
-        # Create colormap
         depth_normalized = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX)
         depth_colormap = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_JET)
         return depth_map, depth_colormap
@@ -135,27 +174,17 @@ def estimate_depth(image_path, model, transform, device):
         print(f"Error in depth estimation: {e}")
         return None, None
         
-
-# def estimate_depth(image, model, transform, device):
-#     """Estimate depth using Depth Pro"""
-#     if model is None:
-#         return (None, None)
-#     try:
-#         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-#         pil_image = Image.fromarray(rgb_image)
-#         image_tensor = transform(pil_image).unsqueeze(0).to(device)
-#         with torch.no_grad():
-#             prediction = model.infer(image_tensor)
-#             depth = prediction['depth']
-#         depth_map = depth.squeeze().cpu().numpy()
-#         depth_normalized = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX)
-#         depth_colormap = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_JET)
-#         return (depth_map, depth_colormap)
-#     except Exception as e:
-#         return (None, None)
-
 def extract_depth_from_bbox(depth_map, bbox):
-    """Extract depth statistics from bounding box region"""
+    """
+    Extract depth statistics from bounding box region
+    
+    Args:
+        depth_map (numpy.ndarray): The depth map.
+        bbox (list): The bounding box.
+        
+    Returns:
+        dict: A dictionary of depth statistics.
+    """
     if depth_map is None:
         return None
     try:
@@ -181,6 +210,15 @@ def extract_depth_from_bbox(depth_map, bbox):
         return None
 
 def setting_up(verbose=True):
+    """
+    Set up the environment for depth estimation.
+    
+    Args:
+        verbose (bool, optional): Whether to print verbose output. Defaults to True.
+        
+    Returns:
+        tuple: A tuple containing the availability of Depth Pro, the model, the transform, and the device.
+    """
     checkpoint_dir = './ml-depth-pro/checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
     try:
@@ -204,14 +242,15 @@ def setting_up(verbose=True):
 class SpeedEstimator:
     """
     Minimal speed estimator with optional debug output
-    Uses depth directly for Z, simple approximation for X,Y
     """ 
     def __init__(self, n_seconds=3, image_width=1920, debug=False):
         """
+        Initializes the speed estimator.
+        
         Args:
-            n_seconds: Time between frames (MUST match your data extraction!)
-            image_width: Image width in pixels
-            debug: Enable debug output
+            n_seconds (int, optional): The number of seconds between frames. Defaults to 3.
+            image_width (int, optional): The width of the image in pixels. Defaults to 1920.
+            debug (bool, optional): Whether to print debug output. Defaults to False.
         """
         self.frame_time = n_seconds
         self.image_width = image_width
@@ -220,11 +259,11 @@ class SpeedEstimator:
         if self.debug:
             print(f"\n{'='*70}")
             print(f"MinimalSpeedEstimator Initialized")
-            print(f"{'='*70}")
+            print(f"{ '='*70}")
             print(f"  Frame time: {self.frame_time} seconds")
             print(f"  Image width: {self.image_width} pixels")
             print(f"  FOV assumption: ~90° horizontal")
-            print(f"{'='*70}\n")
+            print(f"{ '='*70}\n")
     
     def calculate_speed_from_positions(self, pos_history, depth_history, 
                                       bbox_heights=None, class_name=None):
@@ -232,12 +271,13 @@ class SpeedEstimator:
         Calculate speed with optional debug output
         
         Args:
-            pos_history: List of (x, y) pixel positions
-            depth_history: List of depth stats dicts
-            bbox_heights: Not used (for compatibility)
-            class_name: Not used (for compatibility)
+            pos_history (list): A list of (x, y) pixel positions.
+            depth_history (list): A list of depth statistics dictionaries.
+            bbox_heights (list, optional): A list of bounding box heights. Defaults to None.
+            class_name (str, optional): The name of the class. Defaults to None.
+            
         Returns:
-            (speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh)
+            tuple: A tuple containing the speed in m/s, the speed in km/h, the velocity vector in m/s, and the velocity vector in km/h.
         """
         if len(pos_history) < 2 or len(depth_history) < 2:
             return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
@@ -252,15 +292,13 @@ class SpeedEstimator:
         prev_depth = prev_depth_stats.get('median_depth')
         if current_depth is None or prev_depth is None or current_depth <= 0 or prev_depth <= 0:
             return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
-        # ==================== DEBUG OUTPUT START ====================
         if self.debug:
             print(f"\n{'='*70}")
             print(f"SPEED CALCULATION - MinimalSpeedEstimator")
-            print(f"{'='*70}")
+            print(f"{ '='*70}")
             print(f"Frame time: {self.frame_time}s")
             if class_name:
                 print(f"Object class: {class_name}")
-        # Pixel displacement
         dx_pixels = current_pos[0] - prev_pos[0]
         dy_pixels = current_pos[1] - prev_pos[1]
         
@@ -270,7 +308,6 @@ class SpeedEstimator:
             print(f"  Current:  ({current_pos[0]:.1f}, {current_pos[1]:.1f}) pixels")
             print(f"  Change:   ({dx_pixels:+.1f}, {dy_pixels:+.1f}) pixels")
         
-        # Depth displacement (already in meters!)
         dz_meters = current_depth - prev_depth
         
         if self.debug:
@@ -280,8 +317,6 @@ class SpeedEstimator:
             print(f"  Change:   {dz_meters:+.2f}m")
             print(f"  Status:   {'⬇ APPROACHING' if dz_meters < 0 else '⬆ DEPARTING' if dz_meters > 0 else '↔ STATIONARY'}")
         
-        # Approximate pixel-to-meter conversion using depth
-        # Assumes ~90° horizontal FOV
         avg_depth = (current_depth + prev_depth) / 2.0
         pixel_to_meter = (2.0 * avg_depth) / self.image_width
         
@@ -301,7 +336,6 @@ class SpeedEstimator:
             print(f"  Y: {dy_pixels:+.1f} pixels = {dy_meters:+.3f}m")
             print(f"  Z: {dz_meters:+.3f}m (from depth)")
         
-        # Calculate velocities (m/s)
         velocity_x_ms = dx_meters / self.frame_time
         velocity_y_ms = dy_meters / self.frame_time
         velocity_z_ms = dz_meters / self.frame_time
@@ -312,7 +346,6 @@ class SpeedEstimator:
             print(f"  Vy (vertical): {velocity_y_ms:+.3f} m/s = {velocity_y_ms * 3.6:+.2f} km/h")
             print(f"  Vz (depth):    {velocity_z_ms:+.3f} m/s = {velocity_z_ms * 3.6:+.2f} km/h")
         
-        # Calculate scalar speed (3D magnitude)
         displacement_3d = math.sqrt(dx_meters**2 + dy_meters**2 + dz_meters**2)
         speed_ms = displacement_3d / self.frame_time
         speed_kmh = speed_ms * 3.6
@@ -322,76 +355,16 @@ class SpeedEstimator:
             print(f"  3D displacement: {displacement_3d:.3f}m")
             print(f"  Speed: {speed_ms:.3f} m/s = {speed_kmh:.2f} km/h")
         
-        # Velocity vectors
         velocity_vector_ms = (velocity_x_ms, velocity_y_ms, velocity_z_ms)
         velocity_vector_kmh = (velocity_x_ms * 3.6, velocity_y_ms * 3.6, velocity_z_ms * 3.6)
         
-        # Sanity checks and clamping
         speed_kmh_original = speed_kmh
         speed_kmh = max(0, min(speed_kmh, 300))
         speed_ms = speed_kmh / 3.6
         
         velocity_vector_ms = tuple(v / 3.6 for v in velocity_vector_kmh)
         
-       
-        
-        # ==================== DEBUG OUTPUT END ====================
         return (speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh)
-
-# class SpeedEstimator:
-#     """
-#     Class to handle 3D vector speed estimation for vehicles
-#     """
-
-#     def __init__(self, fps=10, time_step=2):
-#         self.fps = fps
-#         self.time_step = time_step
-#         self.frame_time = time_step / fps
-
-#     def calculate_pixel_to_meter_ratio(self, depth_stats, bbox_height):
-#         """
-#         Estimate pixel to meter ratio using depth information
-#         """
-#         if depth_stats is None or depth_stats.get('median_depth') is None:
-#             estimated_depth = 20.0
-#             return (1.5 / bbox_height, estimated_depth)
-#         median_depth = depth_stats['median_depth']
-#         vehicle_height_m = 1.5
-#         pixel_to_meter = vehicle_height_m / bbox_height
-#         return (pixel_to_meter, median_depth)
-
-#     def calculate_speed_from_positions(self, pos_history, depth_history, bbox_heights):
-#         """
-#         Calculate relative 3D velocity vector using position history and depth information.
-#         """
-#         if len(pos_history) < 2:
-#             return (0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
-#         current_pos = pos_history[-1]
-#         prev_pos = pos_history[-2] if len(pos_history) >= 2 else pos_history[-1]
-#         dx_pixels = current_pos[0] - prev_pos[0]
-#         dy_pixels = current_pos[1] - prev_pos[1]
-#         current_depth = depth_history[-1] if len(depth_history) > 0 else None
-#         prev_depth = depth_history[-2] if len(depth_history) > 1 else current_depth
-#         current_bbox_height = bbox_heights[-1] if bbox_heights else 50
-#         pixel_to_meter, depth = self.calculate_pixel_to_meter_ratio(current_depth, current_bbox_height)
-#         velocity_x_ms = dx_pixels * pixel_to_meter / self.frame_time
-#         velocity_y_ms = -dy_pixels * pixel_to_meter / self.frame_time
-#         velocity_z_ms = 0.0
-#         if current_depth and prev_depth and current_depth.get('median_depth') and prev_depth.get('median_depth'):
-#             depth_change = current_depth['median_depth'] - prev_depth['median_depth']
-#             velocity_z_ms = depth_change / self.frame_time
-#         pixel_displacement = math.sqrt(dx_pixels * dx_pixels + dy_pixels * dy_pixels)
-#         displacement_m = pixel_displacement * pixel_to_meter
-#         speed_ms = displacement_m / self.frame_time
-#         speed_kmh = speed_ms * 3.6
-#         velocity_vector_ms = (velocity_x_ms, velocity_y_ms, velocity_z_ms)
-#         velocity_vector_kmh = (velocity_x_ms * 3.6, velocity_y_ms * 3.6, velocity_z_ms * 3.6)
-#         speed_kmh = max(0, min(speed_kmh, 300))
-#         speed_ms = speed_kmh / 3.6
-#         max_component_kmh = 150
-#         velocity_vector_kmh = tuple((max(-max_component_kmh, min(max_component_kmh, v)) for v in velocity_vector_kmh))
-#         velocity_vector_ms = tuple((v / 3.6 for v in velocity_vector_kmh))
-#         return (speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh)
 
 class EnhancedRobustTracker:
     """
@@ -399,6 +372,14 @@ class EnhancedRobustTracker:
     """
 
     def __init__(self, camera_code, max_history=30, max_disappeared=15):
+        """
+        Initializes the tracker.
+        
+        Args:
+            camera_code (str): The code of the camera.
+            max_history (int, optional): The maximum history to keep for each track. Defaults to 30.
+            max_disappeared (int, optional): The maximum number of frames a track can be disappeared for. Defaults to 15.
+        """
         self.id_label_map = {}
         self.track_history = {}
         self.disappeared_tracks = {}
@@ -407,16 +388,29 @@ class EnhancedRobustTracker:
         self.max_history = max_history
         self.max_disappeared = max_disappeared
         self.camera_code = camera_code
-        #self.speed_estimator = SpeedEstimator(fps=CAMERA_CONFIG['fps'], time_step=CAMERA_CONFIG['time_step'])
         self.speed_estimator = SpeedEstimator()
 
     def get_camera_prefix(self):
-        """Map camera folder names to their corresponding prefix codes"""
+        """
+        Map camera folder names to their corresponding prefix codes
+        
+        Returns:
+            str: The prefix code for the camera.
+        """
         camera_prefixes = {'front_left': 'FL', 'left_forward': 'LF', 'right_forward': 'RF', 'right_backward': 'RB', 'rear': 'RE', 'left_backward': 'LB', 'map': 'MP'}
         return camera_prefixes.get(self.camera_code, 'XX')
 
     def assign_label(self, cls_name, vehicle_classes):
-        """Assign a new label for a track with camera-specific prefix"""
+        """
+        Assign a new label for a track with camera-specific prefix
+        
+        Args:
+            cls_name (str): The name of the class.
+            vehicle_classes (list): A list of vehicle classes.
+            
+        Returns:
+            str: The new label.
+        """
         prefix = self.get_camera_prefix()
         if cls_name in vehicle_classes:
             letter_id = chr(ord('A') + self.vehicle_counter % 26)
@@ -429,7 +423,16 @@ class EnhancedRobustTracker:
         return label
 
     def calculate_features(self, image, box):
-        """Enhanced feature extraction using HSV color space"""
+        """
+        Enhanced feature extraction using HSV color space
+        
+        Args:
+            image (numpy.ndarray): The input image.
+            box (list): The bounding box.
+            
+        Returns:
+            dict: A dictionary of features.
+        """
         if image is None:
             return None
         x1, y1, x2, y2 = map(int, box)
@@ -480,7 +483,16 @@ class EnhancedRobustTracker:
             return None
 
     def calculate_similarity_score(self, hist1, hist2):
-        """Calculate similarity between two feature sets"""
+        """
+        Calculate similarity between two feature sets
+        
+        Args:
+            hist1 (dict): The first feature set.
+            hist2 (dict): The second feature set.
+            
+        Returns:
+            float: The similarity score.
+        """
         if hist1 is None or hist2 is None:
             return 0
         try:
@@ -512,7 +524,16 @@ class EnhancedRobustTracker:
             return 0
 
     def compare_dominant_colors(self, colors1, colors2):
-        """Compare dominant color sets"""
+        """
+        Compare dominant color sets
+        
+        Args:
+            colors1 (list): The first dominant color set.
+            colors2 (list): The second dominant color set.
+            
+        Returns:
+            float: The similarity score.
+        """
         if not colors1 or not colors2:
             return 0
         total_sim = 0
@@ -530,7 +551,15 @@ class EnhancedRobustTracker:
         return total_sim / len(colors1)
 
     def predict_next_position(self, positions):
-        """Predict next position based on velocity history"""
+        """
+        Predict next position based on velocity history
+        
+        Args:
+            positions (deque): A deque of positions.
+            
+        Returns:
+            tuple: The predicted position.
+        """
         if len(positions) < 2:
             return None
         recent_positions = list(positions)[-5:]
@@ -548,7 +577,14 @@ class EnhancedRobustTracker:
         return (predicted_x, predicted_y)
 
     def update(self, image, current_detections, vehicle_classes):
-        """Update tracking for current frame with speed estimation"""
+        """
+        Update tracking for current frame with speed estimation
+        
+        Args:
+            image (numpy.ndarray): The input image.
+            current_detections (dict): A dictionary of current detections.
+            vehicle_classes (list): A list of vehicle classes.
+        """
         current_track_ids = set()
         for track_id, (box, cls_name, depth_stats) in current_detections.items():
             current_track_ids.add(track_id)
@@ -591,7 +627,6 @@ class EnhancedRobustTracker:
             track_data = self.track_history[track_id]
             if len(track_data['positions']) >= 2:
                 speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh = self.speed_estimator.calculate_speed_from_positions(track_data['positions'], track_data['depth_history'], class_name=track_data['class'])
-                # speed_ms, speed_kmh, velocity_vector_ms, velocity_vector_kmh = self.speed_estimator.calculate_speed_from_positions(track_data['positions'], track_data['depth_history'], track_data['bbox_heights'])
                 
                 if len(track_data['speeds']) > 0:
                     prev_speed = track_data['speeds'][-1]['speed_kmh']
@@ -617,12 +652,14 @@ class EnhancedRobustTracker:
 
 def _should_load_frame(run_dict, json_exists):
     """
-    Load frame only if it's actually used:
-      - overwrite == True  (to recreate/replace JSON; need dims)
-      - OR detection == True (RF-DETR needs pixels)
-      - OR depth == True (DepthPro needs pixels)
-    If all three are False:
-      - require an existing JSON; otherwise we cannot proceed without pixels.
+    Load frame only if it's actually used
+    
+    Args:
+        run_dict (dict): A dictionary of run parameters.
+        json_exists (bool): Whether the JSON file exists.
+        
+    Returns:
+        bool: True if the frame should be loaded, False otherwise.
     """
     overwrite = run_dict.get('overwrite', False)
     detection = run_dict.get('detection', True)
@@ -632,6 +669,25 @@ def _should_load_frame(run_dict, json_exists):
     return False
 
 def process_frame_with_depth_and_speed(frame_path, model, vehicle_classes, target_classes, camera_name, output_base_dir, DEPTH_PRO_AVAILABLE, depth_model, depth_transform, depth_device, run_dict=None):
+    """
+    Process a single frame with depth and speed estimation.
+    
+    Args:
+        frame_path (str): The path to the frame.
+        model (torch.nn.Module): The detection model.
+        vehicle_classes (list): A list of vehicle classes.
+        target_classes (list): A list of target classes.
+        camera_name (str): The name of the camera.
+        output_base_dir (str): The base directory for the output.
+        DEPTH_PRO_AVAILABLE (bool): Whether the Depth Pro library is available.
+        depth_model (torch.nn.Module): The Depth Pro model.
+        depth_transform (torchvision.transforms.Compose): The transform to apply to the image.
+        depth_device (torch.device): The device to run the model on.
+        run_dict (dict, optional): A dictionary of run parameters. Defaults to None.
+        
+    Returns:
+        dict: A dictionary of results.
+    """
     if run_dict is None:
         run_dict = {'detection': True, 'depth': True, 'speed': True, 'overwrite': False}
     output_dir = os.path.join(output_base_dir, f'{camera_name}_Segmented')
@@ -758,7 +814,15 @@ def process_frame_with_depth_and_speed(frame_path, model, vehicle_classes, targe
     return {'frame': os.path.basename(frame_path), 'detections': len(json_data['annotations']), 'path': os.path.join(output_dir, os.path.basename(frame_path)) if image is not None else None, 'json': json_path, 'has_depth': depth_map is not None}
 
 def convert_numpy_types(obj):
-    """Convert numpy types to Python native types for JSON serialization"""
+    """
+    Convert numpy types to Python native types for JSON serialization
+    
+    Args:
+        obj (object): The object to convert.
+        
+    Returns:
+        object: The converted object.
+    """
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
@@ -775,6 +839,27 @@ def convert_numpy_types(obj):
         return obj
 
 def process_episode_frames_with_depth_and_speed(DEPTH_PRO_AVAILABLE, depth_model, depth_transform, depth_device, episode_num, camera_views, input_base_dir, output_base_dir, model, vehicle_classes, target_classes, run_dict=None, depth_available=False):
+    """
+    Process all frames in an episode with depth and speed estimation.
+    
+    Args:
+        DEPTH_PRO_AVAILABLE (bool): Whether the Depth Pro library is available.
+        depth_model (torch.nn.Module): The Depth Pro model.
+        depth_transform (torchvision.transforms.Compose): The transform to apply to the image.
+        depth_device (torch.device): The device to run the model on.
+        episode_num (int): The episode number.
+        camera_views (list): A list of camera views to process.
+        input_base_dir (str): The base directory for the input.
+        output_base_dir (str): The base directory for the output.
+        model (torch.nn.Module): The detection model.
+        vehicle_classes (list): A list of vehicle classes.
+        target_classes (list): A list of target classes.
+        run_dict (dict, optional): A dictionary of run parameters. Defaults to None.
+        depth_available (bool, optional): Whether depth is available. Defaults to False.
+        
+    Returns:
+        dict: A dictionary of results.
+    """
     if run_dict is None:
         run_dict = {'detection': True, 'depth': True, 'speed': True, 'overwrite': False}
     results = {}
@@ -821,7 +906,12 @@ def process_episode_frames_with_depth_and_speed(DEPTH_PRO_AVAILABLE, depth_model
     return results
 
 def initialize_rfdetr_model():
-    """Initialize RF-DETR model"""
+    """
+    Initialize RF-DETR model
+    
+    Returns:
+        RFDETRBase: The RF-DETR model.
+    """
     try:
         model = RFDETRBase()
         return model
@@ -832,6 +922,14 @@ def initialize_rfdetr_model():
 def rfdetr_detect_objects(model, image, confidence_threshold=0.4):
     """
     Run RF-DETR detection on image and return results in YOLO-compatible format
+    
+    Args:
+        model (RFDETRBase): The RF-DETR model.
+        image (numpy.ndarray): The input image.
+        confidence_threshold (float, optional): The confidence threshold. Defaults to 0.4.
+        
+    Returns:
+        dict: A dictionary of detection results.
     """
     try:
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -855,6 +953,13 @@ def rfdetr_detect_objects(model, image, confidence_threshold=0.4):
 def map_rfdetr_to_target_classes(detection_results, target_classes):
     """
     Filter RF-DETR detections to only include target classes and assign track IDs
+    
+    Args:
+        detection_results (dict): A dictionary of detection results.
+        target_classes (list): A list of target classes.
+        
+    Returns:
+        dict: A dictionary of filtered detections.
     """
     filtered_detections = {}
     track_id_counter = 1
@@ -869,6 +974,18 @@ def map_rfdetr_to_target_classes(detection_results, target_classes):
     return filtered_detections
 
 def process_frames(min_ep, max_ep=-1, input_base_dir='../data/raw/L2D/frames', output_base_dir='../data/processed_frames/L2D', cameras_on=None, run_dict=None, verbose=False):
+    """
+    Process frames from L2D dataset.
+    
+    Args:
+        min_ep (int or list): The minimum episode number to process, or a list of episode numbers.
+        max_ep (int, optional): The maximum episode number to process. Defaults to -1.
+        input_base_dir (str, optional): The base directory for the input. Defaults to '../data/raw/L2D/frames'.
+        output_base_dir (str, optional): The base directory for the output. Defaults to '../data/processed_frames/L2D'.
+        cameras_on (list, optional): A list of camera views to process. Defaults to None.
+        run_dict (dict, optional): A dictionary of run parameters. Defaults to None.
+        verbose (bool, optional): Whether to print verbose output. Defaults to False.
+    """
     global VERBOSE_MODE
     VERBOSE_MODE = bool(verbose)
 

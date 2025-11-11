@@ -12,6 +12,8 @@ import webbrowser
 import networkx as nx
 import ipycytoscape
 from pyvis.network import Network
+from collections import defaultdict
+from tqdm import tqdm
 
 try:
     from IPython import get_ipython
@@ -20,7 +22,12 @@ except ImportError:
         return None
 
 def is_in_jupyter():
-    """Checks if the code is running in a Jupyter Notebook."""
+    """
+    Checks if the code is running in a Jupyter Notebook.
+    
+    Returns:
+        bool: True if running in a Jupyter Notebook, False otherwise.
+    """
     try:
         shell = get_ipython().__class__.__name__
         if shell == 'ZMQInteractiveShell':
@@ -34,11 +41,6 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
     """
     Visualizes traffic scene data, supporting both static and animated plots.
 
-    - Static mode (default): Displays a single frame with velocity vectors.
-    - Animated mode: Displays a sequence of frames with a time slider.
-    - Risk Mode: If 'diagnostics' are provided (static mode only),
-                   colors agents by risk and adds metrics to hover.
-
     Args:
         frames_data (dict or list): A single frame dictionary or a list of frames.
         use_lat_lon (bool): If True, plot using longitude/latitude. Defaults to False (x/y).
@@ -50,7 +52,7 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
     Returns:
         plotly.graph_objects.Figure: An interactive Plotly figure object.
     """
-    # --- 1. Input Handling and Data Extraction ---
+    # Step 1: Input Handling and Data Extraction
     if not isinstance(frames_data, list):
         frames_data = [frames_data]
         animated = False
@@ -59,7 +61,7 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
         if diagnostics:
             print("Warning: 'diagnostics' provided in animated mode. Risk visualization is "
                   "only supported in static (single-frame) mode and will be ignored.")
-            diagnostics = None # Ignore diagnostics in animated mode
+            diagnostics = None
 
     if not frames_data:
         print("Warning: The provided data is empty. Returning an empty figure.")
@@ -98,21 +100,19 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
 
     df = pd.DataFrame(all_entities)
 
-    # --- 1b. Merge Diagnostics Data (if provided) ---
+    # Step 2: Merge Diagnostics Data (if provided)
     if diagnostics and not animated:
         diag_df = pd.DataFrame(diagnostics)
-        # Merge diagnostics into the main frame DataFrame
         df = pd.merge(df, diag_df, on='id', how='left')
         
-        # Fill default values for entities not in diagnostics (like ego)
         df['risk_i'] = df['risk_i'].fillna(0.0)
         df['ttc'] = df['ttc'].fillna(np.inf)
         df['drac'] = df['drac'].fillna(0.0)
         df['pet'] = df['pet'].fillna(np.inf)
 
-    # --- 2. Plotting Logic ---
+    # Step 3: Plotting Logic
     if animated:
-        # --- Animated Plot with Slider (No Risk) ---
+        # Step 3a: Animated Plot with Slider (No Risk)
         title_prefix = 'Animated Traffic Scene'
         labels = {
             'plot_x': 'Longitude' if use_lat_lon else 'X Coordinate',
@@ -134,10 +134,9 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
         fig.update_traces(marker=dict(size=7))
         
     else:
-        # --- Static Plot ---
+        # Step 3b: Static Plot
         title_prefix = 'Traffic Scene Visualization'
         
-        # Extract weather for title
         weather_desc = "Weather: N/A"
         if frames_data:
             first_frame = frames_data[0]
@@ -158,27 +157,23 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
         subtitle = f"<sup>Weather: {weather_desc} | ({'Geographic' if use_lat_lon else 'Cartesian'})</sup>"
 
         if diagnostics:
-            # --- Static Plot WITH RISK ---
-            
-            # Build title with optional risk score
+            # Step 3b-1: Static Plot WITH RISK
             title_base = f"{title_prefix} with Risk Analysis"
             if scene_risk is not None:
                 title_base += f" (Scene Risk: {scene_risk:.3f})"
             
             title = f"{title_base}<br>{subtitle}"
 
-            # Separate ego from other entities for plotting
             ego_df = df[df['type'] == 'ego']
             agents_df = df[df['type'] != 'ego']
             
-            # 1. Plot all agents (non-ego) colored by risk
             fig = px.scatter(
                 agents_df, x='plot_x', y='plot_y', symbol='type',
-                color='risk_i',  # Color by risk
-                color_continuous_scale='YlGn_r', # Add color bar
-                range_color=[0.0, 1.0],         # Set stable 0-1 range
+                color='risk_i',
+                color_continuous_scale='YlGn_r',
+                range_color=[0.0, 1.0],
                 hover_name='id', 
-                hover_data={ # Add risk metrics to hover
+                hover_data={
                     'vx': ':.2f', 'vy': ':.2f', 
                     'speed': ':.2f', 'dist_to_ego': ':.2f',
                     'risk_i': ':.3f',
@@ -191,15 +186,14 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
             )
             fig.update_traces(marker_size=8)
             
-            # 2. Add the ego vehicle as a separate trace
             fig.add_trace(go.Scatter(
                 x=ego_df['plot_x'],
                 y=ego_df['plot_y'],
                 mode='markers',
                 marker=dict(
-                    color=px.colors.qualitative.Plotly[0], # Default 'ego' blue
+                    color=px.colors.qualitative.Plotly[0],
                     size=10,
-                    symbol='cross' # Make ego distinct
+                    symbol='cross'
                 ),
                 name='ego',
                 customdata=np.stack((
@@ -223,16 +217,14 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
                 hovertext=ego_df['id']
             ))
             
-            # 3. Fix legend/colorbar overlap
             fig.update_layout(
                 legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
             )
             
-            # Ensure other agent markers are the standard size
             fig.update_traces(marker=dict(size=15), selector=dict(type='scatter', name_not='ego'))
 
         else:
-            # --- Static Plot WITHOUT RISK (Original Behavior) ---
+            # Step 3b-2: Static Plot WITHOUT RISK
             title = f"{title_prefix}<br>{subtitle}"
             
             fig = px.scatter(
@@ -243,7 +235,7 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
             )
             fig.update_traces(marker=dict(size=15))
 
-        # Add velocity vectors for static plot
+        # Step 3c: Add velocity vectors for static plot
         velocity_vectors = []
         R_EARTH = 6378137
         mean_lat_rad = np.radians(df['plot_y'].mean()) if use_lat_lon else 0
@@ -264,7 +256,7 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
                 ))
         fig.update_layout(shapes=velocity_vectors)
 
-    # --- 3. Final Layout Updates ---
+    # Step 4: Final Layout Updates
     if not use_lat_lon:
         fig.update_layout(yaxis=dict(scaleanchor="x", scaleratio=1))
         
@@ -283,6 +275,7 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
                                            If provided, risk will be computed
                                            and visualized for a static frame.
     """
+    # Step 1: Initialize analyzer and load scene data
     if not analyzer:
         analyzer = RiskAnalysis()
     try:
@@ -295,6 +288,7 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
         print(f"Error: Could not decode JSON from {episode}_graph.json")
         return
 
+    # Step 2: Extract frames from the scene
     frames = extract_frames(scene)
     if not frames:
         print(f"Warning: No frames extracted from episode {episode}")
@@ -302,28 +296,26 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
 
     diagnostics = None
     fig = None
-    scene_risk = None # Variable to hold the risk score
+    scene_risk = None
 
+    # Step 3: Generate visualization based on frame selection
     if frame is not None:
-        # --- Static Frame Visualization ---
+        # Step 3a: Static Frame Visualization
         if frame < 0 or frame >= len(frames):
             print(f"Error: Frame index {frame} is out of range (0 to {len(frames)-1}).")
             return
             
         current_frame = frames[frame]
         
-        # If an analyzer is passed, run the analysis
         if analyzer:
             try:
-                # Capture the scene_risk here
                 risk, diags, _, _ = analyzer.analyze_frame(current_frame)
                 diagnostics = diags
-                scene_risk = risk # Store the risk
+                scene_risk = risk
                 print(f"Analyzed frame {frame}. Max risk: {scene_risk:.3f}")
             except Exception as e:
                 print(f"Error during frame analysis: {e}")
                 
-        # Pass the diagnostics AND scene_risk (or None) to the visualizer
         fig = visualize_frames(
             current_frame, 
             diagnostics=diagnostics, 
@@ -331,24 +323,20 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
         )
         
     else:
-        # --- Animated Scene Visualization ---
-        # (Risk analysis is not supported for animation)
+        # Step 3b: Animated Scene Visualization
         fig = visualize_frames(frames)
 
-    # --- Save and Show Figure ---
+    # Step 4: Save and Show Figure
     if fig:
         if is_in_jupyter():
-            # If in Jupyter, just display the figure inline
             print("Displaying figure in notebook...")
             fig.show()
         else:
-            # If not in Jupyter (e.g., running as a script), save and open in browser
             print("Not in Jupyter. Saving to HTML and opening browser...")
-            figures_dir = './figures'
+            figures_dir = 'figures/scene/'
             if not os.path.exists(figures_dir):
                 os.makedirs(figures_dir)
             
-            # Assuming dataset_path, episode, and frame are defined earlier
             dataset_name = os.path.basename(dataset_path) 
             frame_suffix = f'_frame_{frame}' if frame is not None else '_animated'
             html_file_path = os.path.join(figures_dir, f'scene_visual_{dataset_name}_{episode}{frame_suffix}.html')
@@ -360,16 +348,25 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
         print("Error: Figure was not generated.")
 
 def json_graph_to_networkx(graph_data):
+    """
+    Converts a JSON graph to a NetworkX graph.
+    
+    Args:
+        graph_data (dict): The JSON graph data.
+        
+    Returns:
+        tuple: A tuple containing the NetworkX graph and a mapping of original node IDs to new node IDs.
+    """
+    # Step 1: Initialize graph and mappings
     G = nx.DiGraph()
     node_mapping = {}
     existing_ids = set()
 
-    # Add nodes safely
+    # Step 2: Add nodes safely
     for node_type, node_list in graph_data.get("nodes", {}).items():
         for i, node in enumerate(node_list):
             original_id = node.get("id", f"unknown_{len(node_mapping)}")
 
-            # Make IDs unique across duplicates
             unique_id = original_id
             while unique_id in existing_ids:
                 unique_id = f"{original_id}_{i}"
@@ -383,7 +380,7 @@ def json_graph_to_networkx(graph_data):
             
             G.add_node(node_id, **features)
 
-    # Add edges, only if nodes exist
+    # Step 3: Add edges
     for edge_type, edge_list in graph_data.get("edges", {}).items():
         for edge in edge_list:
             src = edge.get("source")
@@ -391,7 +388,6 @@ def json_graph_to_networkx(graph_data):
             src_id = node_mapping.get(src)
             tgt_id = node_mapping.get(tgt)
 
-            # Skip invalid edges
             if src_id is None or tgt_id is None:
                 continue
 
@@ -401,7 +397,19 @@ def json_graph_to_networkx(graph_data):
 
     return G, node_mapping
 
-def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
+def combined_graph_viewer(graphs_by_frame: dict, episode_num: int, dataset_path: str):
+    """
+    Visualizes a combined graph of all frames in an episode.
+    
+    Args:
+        graphs_by_frame (dict): A dictionary of graphs, where keys are frame numbers and values are graph data.
+        episode_num (int): The episode number.
+        dataset_path (str): The path to the dataset.
+        
+    Returns:
+        ipycytoscape.CytoscapeWidget or None: A Cytoscape widget if in a Jupyter Notebook, otherwise None.
+    """
+    # Step 1: Initialize combined graph and color map
     type_color_map = {
         'vehicle': '#1f77b4',
         'pedestrian': '#ff7f0e',
@@ -412,13 +420,13 @@ def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
     G_combined = nx.DiGraph()
     framewise_nodes = []
 
-    # Combine all frames
+    # Step 2: Combine all frames into a single graph
     for frame_key, graph_data in graphs_by_frame.items():
         G_frame, node_mapping = json_graph_to_networkx(graph_data)
         G_combined.update(G_frame)
         framewise_nodes.append(node_mapping)
 
-    # Temporal edges
+    # Step 3: Add temporal edges between frames
     for i in range(len(framewise_nodes) - 1):
         for orig_id in framewise_nodes[i]:
             if orig_id in framewise_nodes[i + 1]:
@@ -428,7 +436,7 @@ def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
                     interaction="temporal"
                 )
 
-    # Add hover tooltips to nodes
+    # Step 4: Add hover tooltips to nodes
     for node, attrs in G_combined.nodes(data=True):
         title = f"ID: {attrs.get('id', 'N/A')}\nType: {attrs.get('type', 'N/A')}"
         features = attrs.copy()
@@ -438,12 +446,14 @@ def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
             title += f"\n{key}: {value}"
         G_combined.nodes[node]['title'] = title
 
-    # Add semantic tags node
+    # Step 5: Add semantic tags node
     tag_dir_base = 'data/semantic_tags'
-    if 'L2D' in graphs_by_frame['0']['metadata']['source_files']['parquet']:
+    if 'L2D' in dataset_path:
         tag_dir = os.path.join(tag_dir_base, 'L2D')
-    elif 'nuplan' in graphs_by_frame['0']['metadata']['source_files']['parquet']:
-        tag_dir = os.path.join(tag_dir_base, 'nuplan')
+    elif 'nuplan_boston' in dataset_path:
+        tag_dir = os.path.join(tag_dir_base, 'nuplan_boston')
+    elif 'nuplan_pittsburgh' in dataset_path:
+        tag_dir = os.path.join(tag_dir_base, 'nuplan_pittsburgh')
     else:
         tag_dir = None
 
@@ -457,27 +467,25 @@ def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
                 "semantic_tags",
                 title=tags_content,
                 label="Semantic Tags",
-                color="#9467bd", # purple
+                color="#9467bd",
                 shape="star"
             )
 
+    # Step 6: Render graph
     if is_in_jupyter():
-        # Render graph in Jupyter
+        # Step 6a: Render in Jupyter
         cyto = ipycytoscape.CytoscapeWidget()
         cyto.graph.add_graph_from_networkx(G_combined)
 
-        # Node styling
         for node in cyto.graph.nodes:
             node.data['label'] = node.data.get('id', '?')
             node.data['tooltip'] = '\n'.join(f"{k}: {v}" for k, v in node.data.items() if k != 'id')
             node_type = node.data.get('type', 'unknown')
             node.data['color'] = type_color_map.get(node_type, '#d3d3d3')
 
-        # Edge styling
         for edge in cyto.graph.edges:
             edge.data['tooltip'] = '\n'.join(f"{k}: {v}" for k, v in edge.data.items() if k not in ['source', 'target'])
 
-        # Apply style
         cyto.set_style([
             {'selector': 'node',
              'style': {
@@ -499,18 +507,69 @@ def combined_graph_viewer(graphs_by_frame: dict, episode_num: int):
         ])
         return cyto
     else:
-        # Generate and save an HTML file
+        # Step 6b: Generate and save an HTML file
         net = Network(notebook=False, directed=True)
         net.from_nx(G_combined)
 
-        # Create visualizations directory if it doesn't exist
-        output_dir = "visualizations"
+        output_dir = "figures/graphs"
         os.makedirs(output_dir, exist_ok=True)
         file_path = os.path.join(output_dir, f"episode_{episode_num}_graph.html")
 
         net.write_html(file_path)
         print(f"Graph visualization saved to {file_path}")
         
-        # Open the HTML file in the default web browser
         webbrowser.open(f"file://{os.path.realpath(file_path)}")
         return None
+
+def plot_feature_histogram(data_directory, node_type, feature_name):
+    """
+    Generates and displays a histogram for a given feature and node type
+    from a directory of graph JSON files.
+    
+    Args:
+        data_directory (str): The directory containing the graph JSON files.
+        node_type (str): The type of node to plot (e.g., 'vehicle', 'pedestrian').
+        feature_name (str): The name of the feature to plot.
+    """
+    # Step 1: Aggregate feature values
+    feature_values = defaultdict(list)
+    files_to_process = [f for f in os.listdir(data_directory) if f.endswith('_graph.json')]
+
+    for filename in tqdm(files_to_process, desc=f"Aggregating data for {node_type}-{feature_name}"):
+        file_path = os.path.join(data_directory, filename)
+        with open(file_path, 'r') as f:
+            graph_data = json.load(f)
+        
+        for node in graph_data.get('nodes', {}).get(node_type, []):
+            if feature_name == 'all':
+                for key, value in node.get('features', {}).items():
+                    if isinstance(value, (int, float)):
+                        feature_values[key].append(value)
+            else:
+                if feature_name in node.get('features', {}):
+                    value = node['features'][feature_name]
+                    if isinstance(value, (int, float)):
+                        feature_values[feature_name].append(value)
+
+    if not feature_values:
+        print(f"No data found for node type '{node_type}' and feature '{feature_name}' in {data_directory}")
+        return
+
+    # Step 2: Create DataFrame and plot histogram
+    df = pd.DataFrame(dict([(k,pd.Series(v)) for k,v in feature_values.items()]))
+
+    if feature_name == 'all':
+        fig = px.histogram(df, x=df.columns, title=f'Histograms for all features of node type: {node_type}')
+    else:
+        fig = px.histogram(df, x=feature_name, title=f'Histogram for {node_type}-{feature_name}')
+
+    # Step 3: Show or save the plot
+    if is_in_jupyter():
+        fig.show()
+    else:
+        output_dir = 'figures/histograms'
+        os.makedirs(output_dir, exist_ok=True)
+        file_path = os.path.join(output_dir, f'{node_type}_{feature_name}_histogram.html')
+        fig.write_html(file_path)
+        print(f"Histogram saved to {file_path}")
+        webbrowser.open(f'file://{os.path.realpath(file_path)}')

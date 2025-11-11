@@ -4,8 +4,8 @@ from tqdm import tqdm
 from datetime import datetime, timezone
 import time, re, requests
 from dateutil.parser import isoparse
+from zoneinfo import ZoneInfo
 
-# Map region -> (lat0, lon0, alt0)
 MAP_ORIGINS = {
     "pittsburgh": (40.440624, -79.995888, 0.0),
     "singapore": (1.3521, 103.8198, 0.0),
@@ -14,16 +14,34 @@ MAP_ORIGINS = {
 }
 
 def build_transformer(lat0, lon0, alt0=0.0):
-    # Define geographic reference (WGS84)
-    geodetic = CRS.from_epsg(4979)  # lat, lon, ellipsoidal height
-    # Define a local ENU frame centered at (lat0, lon0, alt0)
+    """
+    Builds a transformer to convert from local ENU coordinates to geodetic coordinates.
+    
+    Args:
+        lat0 (float): The latitude of the origin of the local ENU frame.
+        lon0 (float): The longitude of the origin of the local ENU frame.
+        alt0 (float, optional): The altitude of the origin of the local ENU frame. Defaults to 0.0.
+        
+    Returns:
+        pyproj.Transformer: A transformer to convert from local ENU coordinates to geodetic coordinates.
+    """
+    geodetic = CRS.from_epsg(4979)
     local_enu = CRS.from_proj4(
         f"+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k=1 +x_0=0 +y_0=0 +ellps=WGS84"
     )
-    # Create transformer from local (x,y,z) to geodetic (lon, lat, alt)
     return Transformer.from_crs(local_enu, geodetic, always_xy=True)
 
 def add_latlon_to_graphs(json_dir, out_dir=None, map_region="pittsburgh", episodes=None):
+    """
+    Adds latitude, longitude, and altitude to the nodes in the graph JSON files.
+    
+    Args:
+        json_dir (str): The directory containing the graph JSON files.
+        out_dir (str, optional): The directory where the updated JSON files will be saved. Defaults to None.
+        map_region (str, optional): The map region to use for the coordinate transformation. Defaults to "pittsburgh".
+        episodes (list, optional): A list of episode numbers to process. Defaults to None.
+    """
+    # Step 1: Initialize variables
     if map_region not in MAP_ORIGINS:
         raise ValueError(f"Unknown map_region: {map_region}")
 
@@ -38,36 +56,53 @@ def add_latlon_to_graphs(json_dir, out_dir=None, map_region="pittsburgh", episod
             episodes_to_process = set(episodes)
             json_files = [f for f in json_files if int(os.path.splitext(f)[0].split('_')[0]) in episodes_to_process]
 
+    # Step 2: Process each JSON file
     for fname in tqdm(json_files, desc=f"Adding lat/lon/alt for {map_region}"):
         in_path = os.path.join(json_dir, fname)
         with open(in_path, "r") as f:
             graph = json.load(f)
 
+        # Step 3: Process each node
         for ntype, nodes in graph.get("nodes", {}).items():
             for node in nodes:
                 feat = node.get("features", {})
                 x, y, z = feat.get("x"), feat.get("y"), feat.get("z")
                 if x is None or y is None:
                     continue
-                # Convert ENU → LLA
                 lon, lat, alt = transformer.transform(x, y, z or 0.0)
                 feat["latitude"] = float(lat)
                 feat["longitude"] = float(lon)
                 feat["altitude"] = float(alt)
                 node["features"] = feat
 
+        # Step 4: Write the updated graph to a new file
         out_path = os.path.join(out_dir, fname)
         with open(out_path, "w") as f:
             json.dump(graph, f, indent=2)
 
 _IDNUM_RE = re.compile(r".*_(\d+)$")
 
-def _idx_from_id(node_id: str):
+def _idx_from_id(node_id):
+    """
+    Extracts the index from a node ID.
+    """
     m = _IDNUM_RE.match(node_id or "")
     return int(m.group(1)) if m else None
 
 def fetch_weather_features(lat, lon, timestamp_raw_us):
-    ts = float(timestamp_raw_us) / 1e6  # microseconds -> seconds
+    """
+    Fetches weather features from the Open-Meteo API.
+    
+    Args:
+        lat (float): The latitude.
+        lon (float): The longitude.
+        timestamp_raw_us (int): The timestamp in microseconds.
+        
+    Returns:
+        dict: A dictionary of weather features.
+    """
+    # Step 1: Initialize variables
+    ts = float(timestamp_raw_us) / 1e6
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     date_str = dt.strftime("%Y-%m-%d")
 
@@ -78,6 +113,7 @@ def fetch_weather_features(lat, lon, timestamp_raw_us):
         f"&hourly=temperature_2m,cloudcover,precipitation,weathercode,is_day"
         f"&timezone=UTC"
     )
+    # Step 2: Fetch data from the API
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
@@ -100,6 +136,7 @@ def fetch_weather_features(lat, lon, timestamp_raw_us):
         print('failed due to no times')
         return {}
 
+    # Step 3: Find the nearest weather data to the given timestamp
     dt_list = [isoparse(t).replace(tzinfo=timezone.utc) for t in times]
     diffs = [abs((dti - dt).total_seconds()) for dti in dt_list]
     idx = int(min(range(len(diffs)), key=lambda i: diffs[i]))
@@ -108,15 +145,24 @@ def fetch_weather_features(lat, lon, timestamp_raw_us):
         vals = data.get("hourly", {}).get(key, [])
         return cast(vals[idx]) if idx < len(vals) else None
 
+    # Step 4: Return the weather features
     return {
-        #"temperature_C": g("temperature_2m", float),
-        #"cloud_cover_percent": g("cloudcover", float),
         "precipitation_mm": g("precipitation", float),
         "weather_code": g("weathercode", int),
         "is_daylight": bool(data.get("hourly", {}).get("is_day", [0])[idx]),
     }
 
 def enrich_weather_features(json_dir, out_dir=None, sleep_s=0.15, episodes=None):
+    """
+    Enriches the environment nodes in the graph JSON files with weather features.
+    
+    Args:
+        json_dir (str): The directory containing the graph JSON files.
+        out_dir (str, optional): The directory where the updated JSON files will be saved. Defaults to None.
+        sleep_s (float, optional): The number of seconds to sleep between API requests. Defaults to 0.15.
+        episodes (list, optional): A list of episode numbers to process. Defaults to None.
+    """
+    # Step 1: Initialize variables
     out_dir = out_dir or json_dir
     os.makedirs(out_dir, exist_ok=True)
     files = [f for f in os.listdir(json_dir) if f.endswith(".json")]
@@ -125,20 +171,19 @@ def enrich_weather_features(json_dir, out_dir=None, sleep_s=0.15, episodes=None)
             episodes_to_process = set(episodes)
             files = [f for f in files if int(os.path.splitext(f)[0].split('_')[0]) in episodes_to_process]
 
+    # Step 2: Process each JSON file
     for fname in tqdm(files, desc="Enriching env nodes with weather"):
         path = os.path.join(json_dir, fname)
         with open(path, "r") as f:
             g = json.load(f)
 
-        # Heuristic: Check if the first environment node is already enriched
         env_nodes = g.get("nodes", {}).get("environment", [])
         if env_nodes and 'weather_code' in env_nodes[0].get("features", {}):
-            continue  # Skip to the next file if already processed
+            continue
 
         ego_nodes = g.get("nodes", {}).get("ego", [])
         env_nodes = g.get("nodes", {}).get("environment", [])
 
-        # Build ego index -> (lat, lon) map (requires prior lat/lon enrichment on ego)
         ego_latlon = {}
         for n in ego_nodes:
             i = _idx_from_id(n.get("id", ""))
@@ -149,20 +194,18 @@ def enrich_weather_features(json_dir, out_dir=None, sleep_s=0.15, episodes=None)
             if lat is not None and lon is not None:
                 ego_latlon[i] = (float(lat), float(lon))
 
-        # Process env nodes
+        # Step 3: Process each environment node
         for env in env_nodes:
             feat = env.get("features", {})
             ts_raw = feat.get("timestamp_raw")
             lat, lon = feat.get("latitude"), feat.get("longitude")
 
-            # If env lacks lat/lon, copy from matching ego index
             if lat is None or lon is None:
                 i = _idx_from_id(env.get("id", ""))
                 if i is not None and i in ego_latlon:
                     lat, lon = ego_latlon[i]
                     feat["latitude"], feat["longitude"] = lat, lon
 
-            # If still missing any required piece, skip
             if ts_raw is None or lat is None or lon is None:
                 continue
 
@@ -171,13 +214,13 @@ def enrich_weather_features(json_dir, out_dir=None, sleep_s=0.15, episodes=None)
                 feat.update(weather)
                 env["features"] = feat
 
-            time.sleep(sleep_s)  # throttle
+            time.sleep(sleep_s)
 
+        # Step 4: Write the updated graph to a new file
         out_path = os.path.join(out_dir, fname)
         with open(out_path, "w") as f:
             json.dump(g, f, indent=2)
 
-# --- WMO weather code mapping (Open-Meteo / WMO standard) ---
 WMO_WEATHER_MAP = {
     0: "Clear sky",
     1: "Mainly clear",
@@ -210,15 +253,27 @@ WMO_WEATHER_MAP = {
 }
 
 def replace_weather_code_with_description(json_dir, out_dir=None, node_type="environment", remove_numeric=False):
+    """
+    Replaces the weather code in the graph JSON files with a human-readable description.
+    
+    Args:
+        json_dir (str): The directory containing the graph JSON files.
+        out_dir (str, optional): The directory where the updated JSON files will be saved. Defaults to None.
+        node_type (str, optional): The type of node to process. Defaults to "environment".
+        remove_numeric (bool, optional): Whether to remove the numeric weather code after replacement. Defaults to False.
+    """
+    # Step 1: Initialize variables
     out_dir = out_dir or json_dir
     os.makedirs(out_dir, exist_ok=True)
     json_files = [f for f in os.listdir(json_dir) if f.endswith(".json")]
 
+    # Step 2: Process each JSON file
     for fname in tqdm(json_files, desc="Replacing weather codes"):
         fpath = os.path.join(json_dir, fname)
         with open(fpath, "r") as f:
             graph = json.load(f)
 
+        # Step 3: Process each node
         nodes = graph.get("nodes", {}).get(node_type, [])
         for n in nodes:
             feat = n.get("features", {})
@@ -231,23 +286,45 @@ def replace_weather_code_with_description(json_dir, out_dir=None, node_type="env
                     feat.pop("weather_code", None)
                 n["features"] = feat
 
+        # Step 4: Write the updated graph to a new file
         out_path = os.path.join(out_dir, fname)
         with open(out_path, "w") as f:
             json.dump(graph, f, indent=2)
 
     print(f"✅ Weather code replacement complete for {len(json_files)} files.")
 
-def add_temporal_features(json_dir, out_dir=None, node_type="environment"):
+def add_temporal_features(json_dir, out_dir=None, node_type="environment", city="boston"):
+    """
+    Adds temporal features to the nodes in the graph JSON files.
+    
+    Args:
+        json_dir (str): The directory containing the graph JSON files.
+        out_dir (str, optional): The directory where the updated JSON files will be saved. Defaults to None.
+        node_type (str, optional): The type of node to process. Defaults to "environment".
+        city (str, optional): The city to use for the timezone conversion. Defaults to "boston".
+    """
+    # Step 1: Initialize variables
+    city_to_timezone = {
+        "boston": "America/New_York",
+        "pittsburgh": "America/New_York",
+        "singapore": "Asia/Singapore",
+        "las_vegas": "America/Los_Angeles"
+    }
+    
+    local_timezone = ZoneInfo(city_to_timezone.get(city, "UTC"))
 
     out_dir = out_dir or json_dir
     os.makedirs(out_dir, exist_ok=True)
 
     json_files = [f for f in os.listdir(json_dir) if f.endswith(".json")]
+    
+    # Step 2: Process each JSON file
     for fname in tqdm(json_files, desc=f"Adding temporal features to {node_type} nodes"):
         fpath = os.path.join(json_dir, fname)
         with open(fpath, "r") as f:
             graph = json.load(f)
 
+        # Step 3: Process each node
         nodes = graph.get("nodes", {}).get(node_type, [])
         for n in nodes:
             feat = n.get("features", {})
@@ -255,19 +332,21 @@ def add_temporal_features(json_dir, out_dir=None, node_type="environment"):
             if ts_raw is None:
                 continue
 
-            # Convert from µs to UTC datetime
-            dt = datetime.fromtimestamp(ts_raw / 1e6, tz=timezone.utc)
+            dt_utc = datetime.fromtimestamp(ts_raw / 1e6, tz=timezone.utc)
+            
+            dt_local = dt_utc.astimezone(local_timezone)
 
             feat.update({
-                "month": dt.month,
-                "day_of_week": dt.strftime("%A"),
-                "time_of_day": dt.strftime("%H:%M:%S")
+                "month": dt_local.month,
+                "day_of_week": dt_local.strftime("%A"),
+                "time_of_day": dt_local.strftime("%H:%M:%S")
             })
             n["features"] = feat
 
+        # Step 4: Write the updated graph to a new file
         out_path = os.path.join(out_dir, fname)
         with open(out_path, "w") as f:
             json.dump(graph, f, indent=2)
 
     print(f"✅ Temporal enrichment complete for {len(json_files)} scene files.")
-
+    

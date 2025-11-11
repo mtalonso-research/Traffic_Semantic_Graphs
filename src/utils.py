@@ -7,7 +7,10 @@ import matplotlib.pyplot as plt
 import math
 from collections import defaultdict
 
-def _parse_t_from_id(node_id: str):
+def _parse_t_from_id(node_id):
+    """
+    Parses the timestamp from a node ID.
+    """
     try:
         base, t = node_id.rsplit('_', 1)
         return int(t)
@@ -15,33 +18,47 @@ def _parse_t_from_id(node_id: str):
         return None
 
 def _collect_by_time(nodes_list, required_type=None):
+    """
+    Collects nodes by time.
+    """
     by_t = defaultdict(list)
     for n in nodes_list:
         if required_type and n.get("features", {}).get("type") != required_type:
-            # allow categories like 'bicycle' under vehicles; gate by 'type' when asked
             pass
         t = _parse_t_from_id(n["id"])
         if t is None:
-            # Put into a special bucket if needed; here we skip since we score per frame
             continue
-        m = {"id": n["id"], "t": t, **n}  # keep original keys; add parsed t at top-level
+        m = {"id": n["id"], "t": t, **n}
         by_t[t].append(m)
     return by_t
 
 def _index_by_exact_id(nodes_list):
+    """
+    Indexes a list of nodes by their exact ID.
+    """
     return {n["id"]: n for n in nodes_list}
 
-def extract_frames(episode: dict):
+def extract_frames(episode):
+    """
+    Extracts frames from an episode.
+    
+    Args:
+        episode (dict): The episode to extract frames from.
+        
+    Returns:
+        list: A list of frames.
+    """
+    # Step 1: Get the nodes and metadata
     nodes = episode["nodes"]
     meta = episode.get("metadata", {})
     n_frames_meta = meta.get("frames")
 
-    # Ego & env are easy: one per t with exact ids ego_t / env_t
+    # Step 2: Index the ego and environment nodes
     ego_idx = _index_by_exact_id(nodes.get("ego", []))
     env_idx = _index_by_exact_id(nodes.get("environment", []))
 
-    # Bulk agents: group by parsed timestep
-    veh_by_t = _collect_by_time(nodes.get("vehicle", []))         # includes bicycles
+    # Step 3: Collect the vehicle, pedestrian, and object nodes by time
+    veh_by_t = _collect_by_time(nodes.get("vehicle", []))
     ped_by_t = _collect_by_time(nodes.get("pedestrian", []))
     obj_by_t = _collect_by_time(nodes.get("object", []))
 
@@ -52,9 +69,7 @@ def extract_frames(episode: dict):
     }
 
     for agent_type, collection in all_agent_collections.items():
-        # Check if this category has any agents at all AND is missing from frame 0
         if collection and 0 not in collection:
-            # Create an invisible dummy agent with NaN coordinates
             dummy_agent = {
                 'id': f'dummy_{agent_type}_0',
                 'type': agent_type,
@@ -65,19 +80,15 @@ def extract_frames(episode: dict):
                     'vy': 0
                 }
             }
-            # Add it to the collection for frame 0
             collection[0].append(dummy_agent)
 
-    # Determine frame indices: trust metadata if present; else infer from keys
+    # Step 4: Determine the frame indices
     ts = set()
     if n_frames_meta is not None:
-        # Try [0..frames-1]; keep only those that actually have ego/env
         ts = set(range(n_frames_meta))
     else:
-        # Infer from any of the collections
         for d in (veh_by_t, ped_by_t, obj_by_t):
             ts |= set(d.keys())
-        # also consider env/ego ids of the form env_k / ego_k
         for k in env_idx.keys():
             t = _parse_t_from_id(k)
             if t is not None: ts.add(t)
@@ -85,16 +96,15 @@ def extract_frames(episode: dict):
             t = _parse_t_from_id(k)
             if t is not None: ts.add(t)
 
+    # Step 5: Create the frames
     frames = []
     for t in sorted(ts):
         ego = ego_idx.get(f"ego_{t}")
         env = env_idx.get(f"env_{t}")
 
-        # Minimal gating: without ego, we can’t compute risk; skip
         if ego is None:
             continue
 
-        # Vehicles: attach category (some are bicycles) for later semantics
         def _pack(lst):
             out = []
             for n in lst:
@@ -111,7 +121,6 @@ def extract_frames(episode: dict):
         pedestrians = _pack(ped_by_t.get(t, []))
         objects = _pack(obj_by_t.get(t, []))
 
-        # Time fields
         ts_raw = env.get("features", {}).get("timestamp_raw") if env else None
         time_rel = env.get("features", {}).get("time_rel_s") if env else None
 
@@ -135,8 +144,17 @@ def extract_frames(episode: dict):
     return frames
 
 def display_frames(frames_dir):
+    """
+    Displays the frames in a directory.
+    
+    Args:
+        frames_dir (str): The directory containing the frames.
+    """
+    # Step 1: Get the frame files
     frame_files = sorted([f for f in os.listdir(frames_dir) if f.endswith(".jpg")])
     images = [Image.open(os.path.join(frames_dir, f)) for f in frame_files]
+    
+    # Step 2: Display the frames
     fig, axes = plt.subplots(1, len(images), figsize=(4 * len(images), 4))
     if len(images) == 1:
         axes = [axes]  
@@ -147,6 +165,9 @@ def display_frames(frames_dir):
     plt.show()
 
 def get_chunk_num(ep_num):
+    """
+    Gets the chunk number for a given episode number.
+    """
     if ep_num < 1000: chunk = 0
     elif ep_num < 2000: chunk = 1
     elif ep_num < 3000: chunk = 2
@@ -160,17 +181,23 @@ def get_chunk_num(ep_num):
     return chunk
 
 def prepare_and_save_parquet(df, path):
+    """
+    Prepares and saves a DataFrame to a parquet file.
+    
+    Args:
+        df (pd.DataFrame): The DataFrame to save.
+        path (str): The path to save the DataFrame to.
+    """
+    # Step 1: Initialize the list of JSON columns
     json_columns = []
 
-    # Helper: check if value needs serialization
     def needs_serialization(x):
         return isinstance(x, (list, dict))
 
-    # Helper: safely serialize objects (including NumPy types)
     def safe_serialize(x):
         if isinstance(x, (list, dict)):
             def convert(obj):
-                if isinstance(obj, np.generic):  # convert np.float32, np.int64, etc.
+                if isinstance(obj, np.generic):
                     return obj.item()
                 elif isinstance(obj, list):
                     return [convert(i) for i in obj]
@@ -182,16 +209,16 @@ def prepare_and_save_parquet(df, path):
         else:
             return x
 
-    # Process columns
+    # Step 2: Process the columns
     for col in df.columns:
         if df[col].apply(needs_serialization).any():
             df[col] = df[col].apply(safe_serialize)
             json_columns.append(col)
 
-    # Save DataFrame to Parquet
+    # Step 3: Save the DataFrame to a parquet file
     df.to_parquet(path, index=False)
 
-    # Save metadata of serialized columns
+    # Step 4: Save the metadata of the serialized columns
     meta_path = os.path.splitext(path)[0] + "_json_cols.json"
     with open(meta_path, "w") as f:
         json.dump(json_columns, f)
@@ -202,24 +229,32 @@ def prepare_and_save_parquet(df, path):
             df[col] = df[col].apply(lambda x: json.dumps(x) if needs_serialization(x) else x)
             json_columns.append(col)
 
-    # Save DataFrame
     df.to_parquet(path, index=False)
 
-    # Save metadata (which columns were JSON-encoded)
     meta_path = os.path.splitext(path)[0] + "_json_cols.json"
     with open(meta_path, "w") as f:
         json.dump(json_columns, f)
 
 def load_and_restore_parquet(path):
+    """
+    Loads and restores a parquet file.
+    
+    Args:
+        path (str): The path to the parquet file.
+        
+    Returns:
+        pd.DataFrame: The loaded DataFrame.
+    """
+    # Step 1: Load the DataFrame
     df = pd.read_parquet(path)
 
-    # Load JSON metadata if it exists
+    # Step 2: Load the JSON metadata if it exists
     meta_path = os.path.splitext(path)[0] + "_json_cols.json"
     if os.path.exists(meta_path):
         with open(meta_path, "r") as f:
             json_columns = json.load(f)
 
-        # Restore each column using json.loads()
+        # Step 3: Restore each column using json.loads()
         for col in json_columns:
             df[col] = df[col].apply(
                 lambda x: json.loads(x) if isinstance(x, str) and x.startswith(('[', '{')) else x
@@ -229,14 +264,14 @@ def load_and_restore_parquet(path):
 
 def denormalize_steering_angle(z, std_estimate=45):
     """
-    Estimate original driving-related angle (in degrees)
-    from a normalized value z, assuming:
-    - original mean = 0°
-    - original std = 30–45° (default 45°)
+    Denormalizes a steering angle.
     """
     return z * std_estimate
     
 def clean_list(input_list):
+    """
+    Cleans a list.
+    """
     output = []
     buffer = []
     inside_quotes = False
@@ -257,6 +292,9 @@ def clean_list(input_list):
     return output
 
 def load_episode(chunk, ep_num):
+    """
+    Loads an episode.
+    """
     path = f"L2D_downloaded/processed_data/chunk-{chunk:03d}/episode_{ep_num:06d}.parquet"
     try:
         df = load_and_restore_parquet(path)
@@ -264,11 +302,12 @@ def load_episode(chunk, ep_num):
         df['episode'] = ep_num
         return df
     except Exception as e:
-        #print(f"Failed to load chunk {chunk}, episode {ep_num}: {e}")
         return None
     
 def normalize_width(val):
-    """Normalize width values like '2.5 m' or 2.5 to float."""
+    """
+    Normalizes a width value.
+    """
     if pd.isna(val):
         return None
     if isinstance(val, (int, float)):
@@ -281,15 +320,16 @@ def normalize_width(val):
     return None
 
 def flatten_and_clean_values(col, series):
+    """
+    Flattens and cleans the values in a Series.
+    """
     values = set()
     for item in series.dropna():
         if isinstance(item, list):
             values.update(item)
         elif isinstance(item, str) and ',' in item:
-            # Handle comma-separated strings like "roundabout, traffic_signal"
             split_items = [i.strip() for i in item.split(',') if i.strip()]
             values.update(split_items)
         else:
             values.add(item)
     return values
-

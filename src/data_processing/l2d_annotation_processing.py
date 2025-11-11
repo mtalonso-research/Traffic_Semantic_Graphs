@@ -12,23 +12,23 @@ def filter_ego_hood(input_path, output_path):
         output_path (str): Path to save the filtered annotation JSON file.
     """
     try:
+        # Step 1: Read the annotation file
         with open(input_path, 'r') as f:
             data = json.load(f)
 
         image_height = data['images'][0]['height']
         image_width = data['images'][0]['width']
 
-        # Define thresholds based on image dimensions
+        # Step 2: Define thresholds for hood detection
         y_threshold = image_height * 0.9
         width_threshold = image_width * 0.8
 
+        # Step 3: Filter out the hood annotation
         filtered_annotations = []
         for ann in data['annotations']:
-            # Bbox format: [x, y, width, height]
             x, y, width, height = ann['bbox']
             is_car = ann.get('attributes', {}).get('class') == 'car'
 
-            # Check if the annotation meets the criteria for being the hood
             is_hood = (
                 is_car and
                 (y + height) > y_threshold and
@@ -40,7 +40,7 @@ def filter_ego_hood(input_path, output_path):
 
         data['annotations'] = filtered_annotations
 
-        # Create output directory if it doesn't exist
+        # Step 4: Save the filtered annotation file
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         with open(output_path, 'w') as f:
@@ -60,6 +60,7 @@ def process_annotations_directory(min_ep, max_ep=-1, input_dir='data/processed_f
         input_dir (str): The root directory for the input annotations.
         output_dir (str): The root directory to save the filtered annotations.
     """
+    # Step 1: Determine the range of episodes to process
     if not isinstance(min_ep, list):
         if max_ep == -1: 
             max_ep = min_ep + 1
@@ -67,6 +68,7 @@ def process_annotations_directory(min_ep, max_ep=-1, input_dir='data/processed_f
     else:
         iterable = min_ep
 
+    # Step 2: Process each episode
     for ep_num in tqdm(iterable, desc="Processing Annotations"):
         episode_input_dir = os.path.join(input_dir, f"Episode{ep_num:06d}", 'front_left_Annotations')
         episode_output_dir = os.path.join(output_dir, f"Episode{ep_num:06d}")
@@ -77,6 +79,7 @@ def process_annotations_directory(min_ep, max_ep=-1, input_dir='data/processed_f
 
         os.makedirs(episode_output_dir, exist_ok=True)
 
+        # Step 3: Process each annotation file in the episode
         for frame_file in os.listdir(episode_input_dir):
             if frame_file.endswith('.json'):
                 input_path = os.path.join(episode_input_dir, frame_file)

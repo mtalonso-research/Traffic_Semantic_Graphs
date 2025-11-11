@@ -7,20 +7,6 @@ from src.data_processing.l2d_process_frames import process_frames
 from src.data_processing.l2d_generate_graphs import generate_graphs
 from src.data_processing.l2d_annotation_processing import process_annotations_directory
 
-parser = argparse.ArgumentParser(description="Process L2D data.")
-parser.add_argument("--min_ep", type=int, default=0, help="Minimum episode number to process.")
-parser.add_argument("--max_ep", type=int, default=-1, help="Maximum episode number to process.")
-parser.add_argument("--download", action="store_true", help="Run data download step.")
-parser.add_argument("--process_tabular", action="store_true", help="Run tabular data processing step.")
-parser.add_argument("--add_tags", action="store_true", help="Run tag processing step.")
-parser.add_argument("--process_frames", action="store_true", help="Run frame processing step.")
-
-parser.add_argument("--process_annotations", action="store_true", help="Run annotation processing step.")
-parser.add_argument("--generate_graphs", action="store_true", help="Run graph generation step.")
-parser.add_argument("--all", action="store_true", help="Run all steps (default if no flags are set).")
-
-args = parser.parse_args()
-
 def default_l2d_processing(min_ep, max_ep=-1,
                            run_download=False,
                            run_tabular=False,
@@ -28,7 +14,7 @@ def default_l2d_processing(min_ep, max_ep=-1,
                            run_frames=False,
                            run_annotations=False,
                            run_graphs=False):
-
+    
     if not any([run_download, run_tabular, run_tags, run_frames, run_annotations, run_graphs]):
         run_download = run_tabular = run_tags = run_frames = run_annotations = run_graphs = True
 
@@ -80,7 +66,6 @@ def default_l2d_processing(min_ep, max_ep=-1,
                        input_base_dir='./data/raw/L2D/frames',
                        output_base_dir='./data/processed_frames/L2D')
 
-
     if run_annotations:
         print("========== Processing Annotations ==========")
         process_annotations_directory(min_ep, max_ep,
@@ -97,6 +82,20 @@ def default_l2d_processing(min_ep, max_ep=-1,
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Process L2D data.")
+    parser.add_argument("--min_ep", type=int, default=0, help="Minimum episode number to process.")
+    parser.add_argument("--max_ep", type=int, default=-1, help="Maximum episode number to process.")
+    parser.add_argument("--download", action="store_true", help="Run data download step.")
+    parser.add_argument("--process_tabular", action="store_true", help="Run tabular data processing step.")
+    parser.add_argument("--add_tags", action="store_true", help="Run tag processing step.")
+    parser.add_argument("--process_frames", action="store_true", help="Run frame processing step.")
+
+    parser.add_argument("--process_annotations", action="store_true", help="Run annotation processing step.")
+    parser.add_argument("--generate_graphs", action="store_true", help="Run graph generation step.")
+    parser.add_argument("--all", action="store_true", help="Run all steps (default if no flags are set).")
+
+    args = parser.parse_args()
+    
     min_episode = args.min_ep
     max_episode = args.max_ep
 

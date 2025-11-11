@@ -6,29 +6,35 @@ from tqdm import tqdm
 from src.utils import extract_frames
 
 class RiskAnalysis:
-    
+    """
+    A class for performing risk analysis on traffic scenes.
+    """
     def __init__(self, config=None):
+        """
+        Initializes the risk analysis class.
+        
+        Args:
+            config (dict, optional): A dictionary of configuration parameters. Defaults to None.
+        """
         if config is None:
             config = {}
 
-        # --- Default Environment Values ---
+        # Step 1: Default Environment Values
         self.default_temp_c = config.get('default_temp_c', 20.0)
         self.default_precip_mm = config.get('default_precip_mm', 0.0)
         self.default_weather_code = config.get('default_weather_code', 0)
         self.default_is_daylight = config.get('default_is_daylight', True)
         self.default_cloud_cover = config.get('default_cloud_cover', 0.0)
         
-        # --- General Physics & Driver Model ---
+        # Step 2: General Physics & Driver Model
         self.g = config.get('g', 9.81)
-        self.mu0 = config.get('mu0', 0.9)  # Base road friction coefficient
-        self.T_react = config.get('T_react', 1.0) # Base driver reaction time (s)
+        self.mu0 = config.get('mu0', 0.9)
+        self.T_react = config.get('T_react', 1.0)
         
-        # --- Scene Geometry ---
-        self.lane_width = config.get('lane_width', 3.7) # meters
+        # Step 3: Scene Geometry
+        self.lane_width = config.get('lane_width', 3.7)
 
-        # --- Weather Code Mapping ---
-        # Centralizes weather properties to avoid repetition (DRY principle).
-        # Format: code: (description, env_risk, base_vis_factor, base_fric_factor)
+        # Step 4: Weather Code Mapping
         self.weather_code_map = config.get('weather_code_map', {
             0: ("Clear", 1.0, 1.0, 1.0),
             1: ("Overcast", 1.0, 0.9, 1.0),
@@ -38,7 +44,7 @@ class RiskAnalysis:
         })
         self.default_weather_props = ("Unknown", 1.1, 0.8, 0.8)
 
-        # --- Env Hazard Multiplier Config ---
+        # Step 5: Env Hazard Multiplier Config
         self.illum_risk_night = config.get('illum_risk_night', 1.2)
         self.precip_risk_light = config.get('precip_risk_light', 1.15)
         self.precip_risk_heavy = config.get('precip_risk_heavy', 1.35)
@@ -54,14 +60,14 @@ class RiskAnalysis:
         self.w_weather = config.get('w_weather', 0.3)
         self.max_env_hazard = config.get('max_env_hazard', 2.0)
 
-        # --- Risk Model Config ---
+        # Step 6: Risk Model Config
         self.ego_min_speed_for_pet = config.get('ego_min_speed_for_pet', 2.0)
         self.pet_half_life = config.get('pet_half_life', 1.0)
         self.pet_k_steepness = config.get('pet_k_steepness', 2.0)
         self.max_pet_risk_contribution = config.get('max_pet_risk_contribution', 0.7)
         self.visibility_react_scalar = config.get('visibility_react_scalar', 1.5)
 
-        # --- Visibility/Friction Config ---
+        # Step 7: Visibility/Friction Config
         self.precip_vis_dampening = config.get('precip_vis_dampening', 0.1)
         self.light_factor_night = config.get('light_factor_night', 0.8)
         self.min_visibility_factor = config.get('min_visibility_factor', 0.1)
@@ -73,16 +79,18 @@ class RiskAnalysis:
 
 
     def env_hazard_multiplier(self, env_features):
-        
+        """
+        Calculates the environmental hazard multiplier.
+        """
+        # Step 1: Get the environmental features
         temp_C = float(env_features.get("temperature_C", self.default_temp_c))
         precip = float(env_features.get("precipitation_mm", self.default_precip_mm))
         code = int(env_features.get("weather_code", self.default_weather_code))
         daylight = bool(env_features.get("is_daylight", self.default_is_daylight))
 
-        # --- illumination
+        # Step 2: Calculate the risk from each environmental factor
         illum_risk = 1.0 if daylight else self.illum_risk_night
 
-        # --- precipitation intensity
         if precip <= self.precip_thresh_light:
             precip_risk = 1.0
         elif precip <= self.precip_thresh_heavy:
@@ -90,7 +98,6 @@ class RiskAnalysis:
         else:
             precip_risk = self.precip_risk_heavy
 
-        # --- temperature icing
         if temp_C <= self.temp_thresh_cold:
             temp_risk = self.temp_risk_cold
         elif temp_C <= self.temp_thresh_freezing:
@@ -98,10 +105,9 @@ class RiskAnalysis:
         else:
             temp_risk = 1.0
 
-        # --- weather category
         weather_risk = self.weather_code_map.get(code, self.default_weather_props)[1]
 
-        # --- weighted blend of *risk contributions* (risk - 1.0) ---
+        # Step 3: Calculate the environmental hazard multiplier
         E_hazard = (
             1.0
             + self.w_illum   * (illum_risk   - 1.0)
@@ -114,6 +120,10 @@ class RiskAnalysis:
         return E_hazard
 
     def compute_risk(self, frame, friction_factor, visibility_factor):
+        """
+        Computes the risk for a given frame.
+        """
+        # Step 1: Get the ego vehicle's state
         ego = frame['ego']['features']
         ego_pos_2d = np.array([ego['x'], ego['y']])
         ego_vel_2d = np.array([ego['vx'], ego['vy']])
@@ -129,13 +139,13 @@ class RiskAnalysis:
 
         all_entities = (
             frame.get('vehicles', []) + 
-            frame.get('pedestrians', []) #+ 
-            #frame.get('objects', [])
+            frame.get('pedestrians', [])
         )
 
         T_react_scale = (1.0 + (1.0 - visibility_factor) * self.visibility_react_scalar)
         T_react_eff = self.T_react * T_react_scale
 
+        # Step 2: Compute the risk for each agent
         for agent in all_entities:
             features = agent['features']
             pos = np.array([features['x'], features['y']])
@@ -147,17 +157,14 @@ class RiskAnalysis:
             dist_long = np.dot(rel_pos, heading_vec)
             rel_speed_long = np.dot(rel_vel, heading_vec)
 
-            # --- Lateral Distance Check ---
             lateral_vec = np.array([-heading_vec[1], heading_vec[0]])
             dist_lat = abs(np.dot(rel_pos, lateral_vec))
             
-            # --- TTC (with lane-based filtering) ---
             ttc = np.inf
             if dist_lat < (self.lane_width / 2.0):
                 if dist_long > 0 and rel_speed_long < 0:
                     ttc = dist_long / (-rel_speed_long + 1e-6)
             
-            # --- DRAC (with lane-based filtering) ---
             drac = 0.0
             if dist_lat < (self.lane_width / 2.0):
                 v_e_long = float(np.dot(ego_vel_2d, heading_vec))
@@ -166,7 +173,6 @@ class RiskAnalysis:
                 if dist_long > 0 and u > 0:
                     drac = (u * u) / (2.0 * (dist_long + 1e-6))
 
-            # --- PET ---
             pet = np.inf
             try:
                 A = np.column_stack((ego_vel_2d, -vel))
@@ -178,8 +184,6 @@ class RiskAnalysis:
             except np.linalg.LinAlgError:
                 pass 
 
-            # --- Risk Score Calculation ---
-            
             R_ttc = 0.0
             max_decel = self.g * self.mu0 * friction_factor
             if max_decel > 1e-6 and ego_speed > 1e-6:
@@ -213,6 +217,7 @@ class RiskAnalysis:
         if not diagnostics:
             return 0.0, []
         
+        # Step 3: Compute the scene risk
         R_base = max(d["risk_i"] for d in diagnostics)
         
         env_features = frame.get("environment", {}).get("features", {})
@@ -223,14 +228,18 @@ class RiskAnalysis:
         return R_scene, diagnostics
 
     def compute_visibility_factor(self, env):
-        
+        """
+        Computes the visibility factor.
+        """
+        # Step 1: Get the environmental features
         f = env.get("features", {})
         code = int(f.get("conditions", self.default_weather_code))
         precip = float(f.get("precipitation", self.default_precip_mm))
         daylight = bool(f.get("daylight", self.default_is_daylight))
 
+        # Step 2: Compute the visibility factor
         props = self.weather_code_map.get(code, self.default_weather_props)
-        base = props[2] # base_vis_factor
+        base = props[2]
 
         precip_factor = 1.0 / (1.0 + self.precip_vis_dampening * precip)
 
@@ -241,15 +250,18 @@ class RiskAnalysis:
         return float(np.clip(visibility_factor, self.min_visibility_factor, 1.0))
 
     def compute_friction_factor(self, env):
-        """Calculates friction factor (0.1 to 1.0) from environment."""
-
+        """
+        Calculates the friction factor.
+        """
+        # Step 1: Get the environmental features
         f = env.get("features", {})
         code = int(f.get("conditions", self.default_weather_code))
         precip = float(f.get("precipitation", self.default_precip_mm))
         desc = {0:'clear',1:'overcast',2:'raining',3:'snow',4:'fog'}[code]
 
+        # Step 2: Compute the friction factor
         props = self.weather_code_map.get(code, self.default_weather_props)
-        base = props[3] # base_fric_factor
+        base = props[3]
 
         precip_factor = 1.0 / (1.0 + self.precip_fric_dampening * precip)
 
@@ -263,10 +275,21 @@ class RiskAnalysis:
         return float(np.clip(friction_factor, self.min_friction_factor, 1.0))
 
     def analyze_frame(self, frame):
+        """
+        Analyzes a single frame.
+        
+        Args:
+            frame (dict): The frame to analyze.
+            
+        Returns:
+            tuple: A tuple containing the scene risk, diagnostics, visibility factor, and friction factor.
+        """
+        # Step 1: Compute the visibility and friction factors
         env = frame.get("environment", {})
         visibility_factor = self.compute_visibility_factor(env)
         friction_factor = self.compute_friction_factor(env)
 
+        # Step 2: Compute the risk
         R_scene, diagnostics = self.compute_risk(
             frame, friction_factor, visibility_factor
         )
@@ -274,8 +297,20 @@ class RiskAnalysis:
         return R_scene, diagnostics, visibility_factor, friction_factor
 
     def collect_risk_data(self, directory_path, num_episodes):
+        """
+        Collects risk data from a directory of graph files.
+        
+        Args:
+            directory_path (str): The path to the directory containing the graph files.
+            num_episodes (int): The number of episodes to process.
+            
+        Returns:
+            pd.DataFrame: A DataFrame containing the risk data.
+        """
+        # Step 1: Initialize the results list
         results = []
 
+        # Step 2: Process each episode
         for ep in tqdm(range(num_episodes)):
             file_path = os.path.join(directory_path, f"{ep}_graph.json")
             if not os.path.exists(file_path):
@@ -291,6 +326,7 @@ class RiskAnalysis:
             risks, vis_list, fric_list, diagnostics_list = [], [], [], []
             ego_speeds, precips, num_agents_list = [], [], []
 
+            # Step 3: Process each frame
             for i, frame in enumerate(frames):
                 try:
                     R, diag, vis_f, fric_f = self.analyze_frame(frame)
@@ -353,6 +389,7 @@ class RiskAnalysis:
                 r_drac_at_max_risk = agent_diag["r_drac"]
                 r_pet_at_max_risk = agent_diag["r_pet"]
 
+            # Step 4: Append the results
             result = {
                 "episode_num": ep,
                 "mean_risk": float(np.mean(risks)),

@@ -10,11 +10,19 @@ import imageio_ffmpeg
 def download_metadata(metadata_dir="../data/raw/L2D/metadata", force_download=False):
     """
     Download metadata parquet from Hugging Face unless it already exists locally.
-    Returns the local metadata path.
+    
+    Args:
+        metadata_dir (str, optional): The directory to save the metadata to. Defaults to "../data/raw/L2D/metadata".
+        force_download (bool, optional): Whether to force the download even if the file already exists. Defaults to False.
+        
+    Returns:
+        str: The local metadata path.
     """
+    # Step 1: Create the metadata directory if it doesn't exist
     os.makedirs(metadata_dir, exist_ok=True)
     metadata_path = os.path.join(metadata_dir, "metadata.parquet")
 
+    # Step 2: Download the metadata if it doesn't exist or if force_download is True
     if force_download or not os.path.exists(metadata_path):
         print("Downloading global metadata parquet...")
         file_path = hf_hub_download(
@@ -40,15 +48,22 @@ def data_downloader(min_ep,
                     n_secs=3):
     """
     Download data for episodes in the given range.
-    If metadata_path is provided, it will use that parquet directly
-    (e.g. metadata_corrected.parquet). Otherwise, it will call download_metadata().
+    
+    Args:
+        min_ep (int or list): The minimum episode number to download, or a list of episode numbers.
+        max_ep (int, optional): The maximum episode number to download. Defaults to -1.
+        tabular_data_dir (str, optional): The directory to save the tabular data to. Defaults to "../data/raw/L2D/tabular".
+        frames_dir (str, optional): The directory to save the frames to. Defaults to "../data/raw/L2D/frames".
+        metadata_dir (str, optional): The directory to save the metadata to. Defaults to "../data/raw/L2D/metadata".
+        metadata_path (str, optional): The path to the metadata parquet file. Defaults to None.
+        features (dict, optional): A dictionary of features to download. Defaults to None.
+        n_secs (int, optional): The number of seconds of data to download. Defaults to 3.
     """
-
-    # Ensure target directories exist
+    # Step 1: Create the output directories if they don't exist
     os.makedirs(tabular_data_dir, exist_ok=True)
     os.makedirs(frames_dir, exist_ok=True)
 
-    # Determine which episodes to process
+    # Step 2: Determine which episodes to process
     if not isinstance(min_ep, list):
         if max_ep == -1:
             max_ep = min_ep + 1
@@ -56,7 +71,7 @@ def data_downloader(min_ep,
     else:
         iterable = min_ep
 
-    # Default features if none specified
+    # Step 3: Set the default features if none are specified
     if features is None:
         features = {
             "tabular": True,
@@ -71,7 +86,7 @@ def data_downloader(min_ep,
             }
         }
 
-    # Load metadata parquet
+    # Step 4: Load the metadata
     if metadata_path is not None:
         print(f"🔍 Using provided metadata parquet: {metadata_path}")
         if not os.path.exists(metadata_path):
@@ -81,7 +96,7 @@ def data_downloader(min_ep,
 
     metadata_df = pd.read_parquet(metadata_path)
 
-    # Initialize ephemeral cache for chunk/file reuse
+    # Step 5: Download the data for each episode
     cached_files = {"parquet": {}, "video": {}}
 
     for ep_num in iterable:
@@ -99,7 +114,7 @@ def data_downloader(min_ep,
                 if enabled:
                     extract_frames_from_hf_video(ep_row, vid_key, cached_files, frames_dir, n_seconds=n_secs)
 
-    # Cleanup cache
+    # Step 6: Clean up the cache
     for f in list(cached_files["parquet"].values()) + list(cached_files["video"].values()):
         if os.path.exists(f):
             os.remove(f)
@@ -107,6 +122,17 @@ def data_downloader(min_ep,
     print("✅ All done. Temporary files cleaned up.")
 
 def download_tabular_data(ep_row, cached_files, n_sec, episode_num, output_dir):
+    """
+    Download tabular data for a given episode.
+    
+    Args:
+        ep_row (pd.Series): The row of the metadata DataFrame corresponding to the episode.
+        cached_files (dict): A dictionary of cached files.
+        n_sec (int): The number of seconds of data to download.
+        episode_num (int): The episode number.
+        output_dir (str): The directory to save the tabular data to.
+    """
+    # Step 1: Get the chunk and file index
     chunk = int(ep_row["data/chunk_index"])
     file_index = int(ep_row["data/file_index"])
     from_idx = int(ep_row["dataset_from_index"])
@@ -114,7 +140,7 @@ def download_tabular_data(ep_row, cached_files, n_sec, episode_num, output_dir):
 
     cache_key = f"{chunk}_{file_index}"
 
-    # Download master parquet if not cached
+    # Step 2: Download the master parquet if it's not cached
     if cache_key not in cached_files["parquet"]:
         print(f"Downloading tabular chunk {chunk}, file {file_index}...")
         file_path = hf_hub_download(
@@ -126,6 +152,7 @@ def download_tabular_data(ep_row, cached_files, n_sec, episode_num, output_dir):
     else:
         file_path = cached_files["parquet"][cache_key]
 
+    # Step 3: Slice the DataFrame and save it to a new parquet file
     df = pd.read_parquet(file_path)
     df.set_index(df['index'],inplace=True)
     step = int(10 * n_sec)
@@ -137,7 +164,21 @@ def download_tabular_data(ep_row, cached_files, n_sec, episode_num, output_dir):
 
 def extract_frames_from_hf_video(ep_row, video_key, cached_files,
                                  output_dir, n_seconds=1, filename_prefix="frame"):
-
+    """
+    Extract frames from a Hugging Face video.
+    
+    Args:
+        ep_row (pd.Series): The row of the metadata DataFrame corresponding to the episode.
+        video_key (str): The key of the video to extract frames from.
+        cached_files (dict): A dictionary of cached files.
+        output_dir (str): The directory to save the frames to.
+        n_seconds (int, optional): The number of seconds of video to extract frames from. Defaults to 1.
+        filename_prefix (str, optional): The prefix to use for the frame filenames. Defaults to "frame".
+        
+    Returns:
+        int: The number of frames saved.
+    """
+    # Step 1: Get the chunk, file index, and timestamps
     chunk = int(ep_row[f"videos/{video_key}/chunk_index"])
     file_index = int(ep_row[f"videos/{video_key}/file_index"])
     from_ts = ep_row[f"videos/{video_key}/from_timestamp"]
@@ -150,7 +191,7 @@ def extract_frames_from_hf_video(ep_row, video_key, cached_files,
 
     cache_key = f"{chunk}_{file_index}"
 
-    # Step 1: Download master video if not cached
+    # Step 2: Download the master video if it's not cached
     if cache_key not in cached_files["video"]:
         print(f"Downloading video chunk {chunk}, file {file_index} for {video_key}...")
         file_path = hf_hub_download(
@@ -162,7 +203,7 @@ def extract_frames_from_hf_video(ep_row, video_key, cached_files,
     else:
         file_path = cached_files["video"][cache_key]
 
-    # Step 2: Cut relevant portion with ffmpeg (avoiding full decode)
+    # Step 3: Cut the relevant portion of the video with ffmpeg
     h264_path = file_path.replace(".mp4", f"_{episode_num:06d}_{video_key.replace('/', '_')}_cut.mp4")
     ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
     cmd = [
@@ -181,7 +222,7 @@ def extract_frames_from_hf_video(ep_row, video_key, cached_files,
         print(f"⚠️ ffmpeg cut failed for {video_key} episode {episode_num}:\n", e.stderr)
         return 0
 
-    # Step 3: Extract frames
+    # Step 4: Extract frames from the cut video
     cap = cv2.VideoCapture(h264_path)
     if not cap.isOpened():
         print(f"Failed to open cut video for {video_key}, episode {episode_num}.")
@@ -214,6 +255,6 @@ def extract_frames_from_hf_video(ep_row, video_key, cached_files,
         frame_count += 1
 
     cap.release()
-    os.remove(h264_path)  # cleanup
+    os.remove(h264_path)
     print(f"✅ Extracted {saved_count} frames from {video_key} for episode {episode_num}.")
     return saved_count

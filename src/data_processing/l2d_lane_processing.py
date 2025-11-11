@@ -8,15 +8,11 @@ import math
 from collections import defaultdict, deque
 from tqdm import tqdm
 
-# -----------------------------
-# Shapely (optional dependency)
-# -----------------------------
 try:
     from shapely.geometry import Point, Polygon
     from shapely.ops import unary_union
     from shapely.validation import explain_validity
     try:
-        # Shapely >= 2
         from shapely import make_valid, set_precision, intersection as s_intersection
     except Exception:
         make_valid = None
@@ -32,10 +28,17 @@ except ImportError:
 
 class EnhancedLaneDetector:
     """
-    Enhanced lane detection system with vehicle lane classification capabilities
+    Enhanced lane detection system with vehicle lane classification
     """
 
     def __init__(self, image_width=1920, image_height=1080):
+        """
+        Initializes the lane detector.
+        
+        Args:
+            image_width (int, optional): The width of the image. Defaults to 1920.
+            image_height (int, optional): The height of the image. Defaults to 1080.
+        """
         self.image_width = image_width
         self.image_height = image_height
 
@@ -59,17 +62,21 @@ class EnhancedLaneDetector:
         self.ego_lane_width_threshold = 3.0
         self.lane_overlap_threshold = 0.3
 
-    # -----------------------------
-    # Helpers for robust geometry
-    # -----------------------------
     def _fix_polygon(self, g):
-        """Return a cleaned, valid polygon. Accepts list-of-points or Polygon."""
+        """
+        Return a cleaned, valid polygon. Accepts list-of-points or Polygon.
+        
+        Args:
+            g (list or Polygon): The polygon to fix.
+            
+        Returns:
+            Polygon: The fixed polygon.
+        """
         if g is None:
             return None
         if not SHAPELY_AVAILABLE:
             return g
 
-        # Accept coords too
         if isinstance(g, (list, tuple)):
             try:
                 g = Polygon(g)
@@ -79,27 +86,23 @@ class EnhancedLaneDetector:
         if g.is_empty:
             return g
 
-        # First pass: classic self-intersection fix
         try:
             g_fixed = g.buffer(0)
         except Exception:
             g_fixed = g
 
-        # Shapely 2: make_valid can handle more cases
         if make_valid is not None and (not g_fixed.is_valid):
             try:
                 g_fixed = make_valid(g_fixed)
             except Exception:
                 pass
 
-        # If MultiPolygon, use the largest face for the ego lane
         if getattr(g_fixed, "geom_type", "") == "MultiPolygon":
             try:
                 g_fixed = max(g_fixed.geoms, key=lambda gg: gg.area)
             except Exception:
                 pass
 
-        # Optional quantization to reduce numeric robustness issues
         if set_precision is not None:
             try:
                 g_fixed = set_precision(g_fixed, 1e-6)
@@ -109,7 +112,15 @@ class EnhancedLaneDetector:
         return g_fixed
 
     def _polygon_coords(self, poly_or_coords):
-        """Return a list of exterior coords whether input is coords or Polygon."""
+        """
+        Return a list of exterior coords whether input is coords or Polygon.
+        
+        Args:
+            poly_or_coords (list or Polygon): The polygon or coordinates.
+            
+        Returns:
+            list: A list of coordinates.
+        """
         if hasattr(poly_or_coords, "exterior"):
             try:
                 return list(poly_or_coords.exterior.coords)
@@ -117,31 +128,50 @@ class EnhancedLaneDetector:
                 return None
         return poly_or_coords
 
-    # -----------------------------
-    # ROI & pre-processing
-    # -----------------------------
     def get_roi_vertices(self, img):
-        """Define region of interest vertices for lane detection (balanced)."""
+        """
+        Define region of interest vertices for lane detection (balanced).
+        
+        Args:
+            img (numpy.ndarray): The input image.
+            
+        Returns:
+            numpy.ndarray: The vertices of the region of interest.
+        """
         height, width = img.shape[:2]
         top_ratio = 0.55
         left_ratio = 0.08
         right_ratio = 0.96
         top_left_ratio = 0.38
         top_right_ratio = 0.92
-        vertices = np.array([[
-            (int(width * left_ratio), height),
-            (int(width * top_left_ratio), int(height * top_ratio)),
-            (int(width * top_right_ratio), int(height * top_ratio)),
-            (int(width * right_ratio), height)
-        ]], dtype=np.int32)
+        vertices = np.array([
+            [(int(width * left_ratio), height),
+             (int(width * top_left_ratio), int(height * top_ratio)),
+             (int(width * top_right_ratio), int(height * top_ratio)),
+             (int(width * right_ratio), height)]
+        ], dtype=np.int32)
         return vertices
 
     def get_roi_tuning_guide(self):
-        """(Text guide omitted here to keep code compact—retain yours if needed.)"""
+        """
+        Returns a guide for tuning the region of interest.
+        
+        Returns:
+            str: A guide for tuning the region of interest.
+        """
         return "See original tuning guide in your prior version."
 
     def region_of_interest(self, img, vertices):
-        """Apply region of interest mask to focus on road area."""
+        """
+        Apply region of interest mask to focus on road area.
+        
+        Args:
+            img (numpy.ndarray): The input image.
+            vertices (numpy.ndarray): The vertices of the region of interest.
+            
+        Returns:
+            numpy.ndarray: The masked image.
+        """
         mask = np.zeros_like(img)
         if len(img.shape) > 2:
             channel_count = img.shape[2]
@@ -153,7 +183,15 @@ class EnhancedLaneDetector:
         return masked_image
 
     def detect_edges(self, img):
-        """Convert to grayscale and apply Canny edge detection."""
+        """
+        Convert to grayscale and apply Canny edge detection.
+        
+        Args:
+            img (numpy.ndarray): The input image.
+            
+        Returns:
+            numpy.ndarray: The edge-detected image.
+        """
         if len(img.shape) > 2:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         else:
@@ -163,7 +201,15 @@ class EnhancedLaneDetector:
         return edges
 
     def detect_lines(self, edges):
-        """Use Hough Line Transform to detect lines in edge image."""
+        """
+        Use Hough Line Transform to detect lines in edge image.
+        
+        Args:
+            edges (numpy.ndarray): The edge-detected image.
+            
+        Returns:
+            numpy.ndarray: The detected lines.
+        """
         lines = cv2.HoughLinesP(
             edges,
             rho=self.hough_rho,
@@ -175,7 +221,16 @@ class EnhancedLaneDetector:
         return lines
 
     def classify_lines(self, lines, img_shape):
-        """Classify detected lines into left and right lanes based on slope."""
+        """
+        Classify detected lines into left and right lanes based on slope.
+        
+        Args:
+            lines (numpy.ndarray): The detected lines.
+            img_shape (tuple): The shape of the image.
+            
+        Returns:
+            tuple: A tuple containing the left and right lane lines.
+        """
         if lines is None:
             return ([], [])
         left_lines = []
@@ -196,7 +251,15 @@ class EnhancedLaneDetector:
         return (left_lines, right_lines)
 
     def fit_lane_line(self, lines):
-        """Fit a single line through multiple line segments."""
+        """
+        Fit a single line through multiple line segments.
+        
+        Args:
+            lines (list): A list of line segments.
+            
+        Returns:
+            tuple: A tuple containing the slope and intercept of the fitted line.
+        """
         if not lines:
             return None
         points = []
@@ -217,7 +280,17 @@ class EnhancedLaneDetector:
             return None
 
     def extrapolate_lane_line(self, slope, intercept, img_shape):
-        """Extrapolate lane line to cover the full region of interest."""
+        """
+        Extrapolate lane line to cover the full region of interest.
+        
+        Args:
+            slope (float): The slope of the line.
+            intercept (float): The intercept of the line.
+            img_shape (tuple): The shape of the image.
+            
+        Returns:
+            list: A list of two points representing the extrapolated line.
+        """
         height, width = img_shape[:2]
         y1 = height
         y2 = int(height * 0.55)
@@ -228,7 +301,16 @@ class EnhancedLaneDetector:
         return [(x1, y1), (x2, y2)]
 
     def update_roi_parameters(self, top_ratio=0.55, left_ratio=0.08, right_ratio=0.96, top_left_ratio=0.38, top_right_ratio=0.92):
-        """Update ROI parameters for dynamic tuning."""
+        """
+        Update ROI parameters for dynamic tuning.
+        
+        Args:
+            top_ratio (float, optional): The top ratio of the ROI. Defaults to 0.55.
+            left_ratio (float, optional): The left ratio of the ROI. Defaults to 0.08.
+            right_ratio (float, optional): The right ratio of the ROI. Defaults to 0.96.
+            top_left_ratio (float, optional): The top-left ratio of the ROI. Defaults to 0.38.
+            top_right_ratio (float, optional): The top-right ratio of the ROI. Defaults to 0.92.
+        """
         self.roi_params = {
             'top_ratio': top_ratio,
             'left_ratio': left_ratio,
@@ -238,7 +320,16 @@ class EnhancedLaneDetector:
         }
 
     def get_roi_vertices_custom(self, img, roi_params=None):
-        """Generate ROI vertices with custom parameters for testing."""
+        """
+        Generate ROI vertices with custom parameters for testing.
+        
+        Args:
+            img (numpy.ndarray): The input image.
+            roi_params (dict, optional): A dictionary of ROI parameters. Defaults to None.
+            
+        Returns:
+            numpy.ndarray: The vertices of the region of interest.
+        """
         height, width = img.shape[:2]
         if roi_params is None:
             roi_params = getattr(self, 'roi_params', {
@@ -248,16 +339,25 @@ class EnhancedLaneDetector:
                 'top_left_ratio': 0.38,
                 'top_right_ratio': 0.92
             })
-        vertices = np.array([[
-            (int(width * roi_params['left_ratio']), height),
-            (int(width * roi_params['top_left_ratio']), int(height * roi_params['top_ratio'])),
-            (int(width * roi_params['top_right_ratio']), int(height * roi_params['top_ratio'])),
-            (int(width * roi_params['right_ratio']), height)
-        ]], dtype=np.int32)
+        vertices = np.array([
+            [(int(width * roi_params['left_ratio']), height),
+             (int(width * roi_params['top_left_ratio']), int(height * roi_params['top_ratio'])),
+             (int(width * roi_params['top_right_ratio']), int(height * roi_params['top_ratio'])),
+             (int(width * roi_params['right_ratio']), height)]
+        ], dtype=np.int32)
         return vertices
 
     def smooth_lanes(self, left_line, right_line):
-        """Smooth lane detection using historical data."""
+        """
+        Smooth lane detection using historical data.
+        
+        Args:
+            left_line (list): The left lane line.
+            right_line (list): The right lane line.
+            
+        Returns:
+            tuple: A tuple containing the smoothed left and right lane lines.
+        """
         if left_line:
             self.lane_history['left_lanes'].append(left_line)
         if right_line:
@@ -281,7 +381,14 @@ class EnhancedLaneDetector:
     def define_ego_lane_polygon(self, left_lane, right_lane, img_shape):
         """
         Define the ego vehicle's lane as a polygon between left and right lane lines.
-        Returns a cleaned Shapely Polygon if available, else list of points.
+        
+        Args:
+            left_lane (list): The left lane line.
+            right_lane (list): The right lane line.
+            img_shape (tuple): The shape of the image.
+            
+        Returns:
+            Polygon or list: The ego lane polygon.
         """
         if not left_lane or not right_lane:
             return None
@@ -290,7 +397,6 @@ class EnhancedLaneDetector:
         right_pt1, right_pt2 = right_lane
 
         ego_lane_points = [left_pt1, left_pt2, right_pt2, right_pt1]
-        # Explicitly close ring
         if ego_lane_points[0] != ego_lane_points[-1]:
             ego_lane_points.append(ego_lane_points[0])
 
@@ -306,13 +412,16 @@ class EnhancedLaneDetector:
         else:
             return ego_lane_points
 
-    # -----------------------------
-    # Fallback (ray casting)
-    # -----------------------------
     def point_in_polygon_fallback(self, point, polygon_points):
         """
         Fallback method to check if point is in polygon
-        Uses ray casting algorithm. Accepts coords or Shapely polygon.
+        
+        Args:
+            point (tuple): The point to check.
+            polygon_points (list): The polygon points.
+            
+        Returns:
+            bool: True if the point is in the polygon, False otherwise.
         """
         polygon_points = self._polygon_coords(polygon_points)
         if not polygon_points or len(polygon_points) < 3:
@@ -337,6 +446,13 @@ class EnhancedLaneDetector:
     def calculate_overlap_fallback(self, bbox, ego_lane_points):
         """
         Fallback method to estimate overlap (coords or Shapely polygon accepted).
+        
+        Args:
+            bbox (list): The bounding box.
+            ego_lane_points (list or Polygon): The ego lane points.
+            
+        Returns:
+            float: The overlap ratio.
         """
         coords = self._polygon_coords(ego_lane_points)
         if not coords or len(coords) < 3:
@@ -346,7 +462,7 @@ class EnhancedLaneDetector:
         if x2 < x1 or y2 < y1:
             return 0.0
 
-        step = 5  # adjust for speed/accuracy trade-off
+        step = 5
         xs = range(int(x1), int(x2), step)
         ys = range(int(y1), int(y2), step)
         if not xs or not ys:
@@ -361,15 +477,19 @@ class EnhancedLaneDetector:
                     inside += 1
         return inside / total if total else 0.0
 
-    # -----------------------------
-    # Main classification
-    # -----------------------------
     def classify_object_lane_position(self, bbox, center, left_lane, right_lane, img_shape):
         """
         Classify whether an object is in the ego vehicle's lane.
-
+        
+        Args:
+            bbox (list): The bounding box of the object.
+            center (tuple): The center of the object.
+            left_lane (list): The left lane line.
+            right_lane (list): The right lane line.
+            img_shape (tuple): The shape of the image.
+            
         Returns:
-        - ('in_lane' | 'out_of_lane_left' | 'out_of_lane_right' | 'unknown', overlap_ratio)
+            tuple: A tuple containing the classification and the overlap ratio.
         """
         ego_lane_data = self.define_ego_lane_polygon(left_lane, right_lane, img_shape)
         if ego_lane_data is None:
@@ -413,7 +533,16 @@ class EnhancedLaneDetector:
             return ('unknown', overlap_ratio)
 
     def get_lane_x_at_y(self, lane_line, y):
-        """Get X coordinate of lane line at given Y coordinate."""
+        """
+        Get X coordinate of lane line at given Y coordinate.
+        
+        Args:
+            lane_line (list): The lane line.
+            y (int): The Y coordinate.
+            
+        Returns:
+            float: The X coordinate.
+        """
         if not lane_line:
             return None
         (x1, y1), (x2, y2) = lane_line
@@ -423,11 +552,16 @@ class EnhancedLaneDetector:
         x = x1 + slope * (y - y1)
         return x
 
-    # -----------------------------
-    # End-to-end detection per frame
-    # -----------------------------
     def detect_lanes(self, image):
-        """Main lane detection function with enhanced capabilities."""
+        """
+        Main lane detection function with enhanced capabilities.
+        
+        Args:
+            image (numpy.ndarray): The input image.
+            
+        Returns:
+            tuple: A tuple containing the lane information and debug images.
+        """
         vertices = self.get_roi_vertices(image)
         roi_image = self.region_of_interest(image, vertices)
         edges = self.detect_edges(roi_image)
@@ -489,6 +623,12 @@ enhanced_lane_detector = EnhancedLaneDetector()
 def extract_vehicles_from_yolo_json(yolo_data):
     """
     Extract vehicle and pedestrian information from YOLO JSON annotations.
+    
+    Args:
+        yolo_data (dict): The YOLO JSON data.
+        
+    Returns:
+        list: A list of vehicle and pedestrian information.
     """
     if not yolo_data or 'annotations' not in yolo_data:
         return []
@@ -524,6 +664,15 @@ def extract_vehicles_from_yolo_json(yolo_data):
 def draw_enhanced_lanes_with_vehicles(image, lane_info, vehicles, ego_lane_alpha=0.2):
     """
     Draw lanes and classify vehicles with enhanced visualizations.
+    
+    Args:
+        image (numpy.ndarray): The input image.
+        lane_info (dict): The lane information.
+        vehicles (list): A list of vehicle information.
+        ego_lane_alpha (float, optional): The alpha value for the ego lane. Defaults to 0.2.
+        
+    Returns:
+        numpy.ndarray: The image with the lanes and vehicles drawn.
     """
     result_image = image.copy()
     colors = {
@@ -589,7 +738,6 @@ def draw_enhanced_lanes_with_vehicles(image, lane_info, vehicles, ego_lane_alpha
         cv2.putText(result_image, display_label, (x1 + 5, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-    # Tiny legend
     legend_y = 30
     for classification, color in colors.items():
         if classification in ['in_lane', 'out_of_lane_left', 'out_of_lane_right', 'unknown']:
@@ -606,6 +754,12 @@ def draw_enhanced_lanes_with_vehicles(image, lane_info, vehicles, ego_lane_alpha
 def create_comprehensive_debug_visualization(original_image, debug_images, lane_info, vehicles):
     """
     Create comprehensive debug visualization with vehicle classifications.
+    
+    Args:
+        original_image (numpy.ndarray): The original image.
+        debug_images (dict): A dictionary of debug images.
+        lane_info (dict): The lane information.
+        vehicles (list): A list of vehicle information.
     """
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     result_image = draw_enhanced_lanes_with_vehicles(original_image, lane_info, vehicles)
@@ -706,6 +860,14 @@ def create_comprehensive_debug_visualization(original_image, debug_images, lane_
 def load_yolo_annotations(episode_num, camera_name, frame_filename):
     """
     Load YOLO+Depth+Speed annotations from existing JSON files.
+    
+    Args:
+        episode_num (int): The episode number.
+        camera_name (str): The name of the camera.
+        frame_filename (str): The filename of the frame.
+        
+    Returns:
+        dict: The YOLO annotations.
     """
     base_name = os.path.splitext(frame_filename)[0]
     possible_paths = [
@@ -722,7 +884,12 @@ def load_yolo_annotations(episode_num, camera_name, frame_filename):
 
 
 def create_roi_test_scenarios():
-    """Create predefined ROI test scenarios for common driving conditions."""
+    """
+    Create predefined ROI test scenarios for common driving conditions.
+    
+    Returns:
+        dict: A dictionary of ROI test scenarios.
+    """
     scenarios = {
         'highway':  {'top_ratio': 0.5,  'left_ratio': 0.1,  'right_ratio': 0.95, 'top_left_ratio': 0.4,  'top_right_ratio': 0.9},
         'city':     {'top_ratio': 0.6,  'left_ratio': 0.05, 'right_ratio': 0.98, 'top_left_ratio': 0.35, 'top_right_ratio': 0.95},
@@ -736,6 +903,14 @@ def create_roi_test_scenarios():
 def test_roi_settings(image_path, roi_params_list, detector=None):
     """
     Test multiple ROI parameter sets on a single image to find optimal settings.
+    
+    Args:
+        image_path (str): The path to the image.
+        roi_params_list (list): A list of ROI parameter sets.
+        detector (EnhancedLaneDetector, optional): The lane detector. Defaults to None.
+        
+    Returns:
+        list: A list of results.
     """
     if detector is None:
         detector = enhanced_lane_detector
@@ -795,7 +970,15 @@ def test_roi_settings(image_path, roi_params_list, detector=None):
 
 
 def quick_roi_optimization(test_image_path):
-    """Quick ROI optimization using predefined scenarios."""
+    """
+    Quick ROI optimization using predefined scenarios.
+    
+    Args:
+        test_image_path (str): The path to the test image.
+        
+    Returns:
+        tuple: A tuple containing the name of the best scenario and the best parameters.
+    """
     scenarios = create_roi_test_scenarios()
     params_list = list(scenarios.values())
     results = test_roi_settings(test_image_path, params_list)
@@ -806,7 +989,18 @@ def quick_roi_optimization(test_image_path):
 
 
 def fine_tune_roi(base_params, test_image_path, param_name='top_ratio', test_values=None):
-    """Fine-tune a specific ROI parameter."""
+    """
+    Fine-tune a specific ROI parameter.
+    
+    Args:
+        base_params (dict): The base parameters.
+        test_image_path (str): The path to the test image.
+        param_name (str, optional): The name of the parameter to fine-tune. Defaults to 'top_ratio'.
+        test_values (list, optional): A list of test values. Defaults to None.
+        
+    Returns:
+        list: A list of results.
+    """
     if test_values is None:
         if param_name == 'top_ratio':
             test_values = [0.45, 0.5, 0.55, 0.6, 0.65]
@@ -822,7 +1016,15 @@ def fine_tune_roi(base_params, test_image_path, param_name='top_ratio', test_val
 
 
 def convert_numpy_types(obj):
-    """Convert numpy types to Python native types for JSON serialization."""
+    """
+    Convert numpy types to Python native types for JSON serialization.
+    
+    Args:
+        obj (object): The object to convert.
+        
+    Returns:
+        object: The converted object.
+    """
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
@@ -851,7 +1053,16 @@ def process_frame_with_vehicle_lane_classification(
 ):
     """
     Process a single frame with lane detection and vehicle lane classification.
-    Saves images only when verbose=True. JSON annotations are always saved.
+    
+    Args:
+        frame_path (str): The path to the frame.
+        episode_num (int): The episode number.
+        camera_name (str, optional): The name of the camera. Defaults to 'front_left'.
+        output_base_dir (str, optional): The base directory for the output. Defaults to '../data/processed_frames/L2D_lanes'.
+        verbose (bool, optional): Whether to save images. Defaults to False.
+        
+    Returns:
+        dict: A dictionary of results.
     """
     image = cv2.imread(frame_path)
     if image is None:
@@ -882,10 +1093,8 @@ def process_frame_with_vehicle_lane_classification(
     result_image = draw_enhanced_lanes_with_vehicles(image, lane_info, vehicles)
     output_path = os.path.join(segmented_dir, filename)
 
-    # Save images only if verbose
     if verbose:
         cv2.imwrite(output_path, result_image)
-        # Optional: debug layers
         cv2.imwrite(os.path.join(debug_dir, f'{base_name}_roi.jpg'), debug_images['roi_mask'])
         cv2.imwrite(os.path.join(debug_dir, f'{base_name}_edges.jpg'), debug_images['edges'])
 
@@ -998,9 +1207,6 @@ def process_frame_with_vehicle_lane_classification(
     }
 
 
-# -----------------------------
-# Episode-level processing
-# -----------------------------
 def process_episode_with_vehicle_lane_classification(
     episode_num,
     camera_name='front_left',
@@ -1010,7 +1216,16 @@ def process_episode_with_vehicle_lane_classification(
 ):
     """
     Process entire episode with enhanced lane detection and vehicle classification.
-    Saves images only when verbose=True. JSON summary is always saved.
+    
+    Args:
+        episode_num (int): The episode number.
+        camera_name (str, optional): The name of the camera. Defaults to 'front_left'.
+        output_base_dir (str, optional): The base directory for the output. Defaults to '../data/processed_frames/L2D_lanes'.
+        raw_base_dir (str, optional): The base directory for the raw data. Defaults to '../data/raw/L2D/frames'.
+        verbose (bool, optional): Whether to save images. Defaults to False.
+        
+    Returns:
+        dict: A dictionary of the summary.
     """
     camera_frames_dir = f'{raw_base_dir}/Episode{episode_num:06d}/observation.images.{camera_name}'
     episode_output_dir = os.path.join(output_base_dir, f'Episode{episode_num:06d}')
@@ -1093,18 +1308,22 @@ def process_episode_with_vehicle_lane_classification(
     return summary
 
 
-# -----------------------------
-# Batch entry point
-# -----------------------------
 def lane_processing(min_ep, max_ep=-1, 
                     output_base_dir='../data/processed_frames/L2D_lanes',
                     raw_base_dir='../data/graphical/L2D',
                     verbose=False):
     """
     Run lane processing across one or more episodes.
-    - If min_ep is an int: processes range(min_ep, max_ep or min_ep+1)
-    - If min_ep is a list: processes each episode number in the list
-    Saves images only when verbose=True.
+    
+    Args:
+        min_ep (int or list): The minimum episode number to process, or a list of episode numbers.
+        max_ep (int, optional): The maximum episode number to process. Defaults to -1.
+        output_base_dir (str, optional): The base directory for the output. Defaults to '../data/processed_frames/L2D_lanes'.
+        raw_base_dir (str, optional): The base directory for the raw data. Defaults to '../data/graphical/L2D'.
+        verbose (bool, optional): Whether to save images. Defaults to False.
+        
+    Returns:
+        dict: A dictionary of the summary.
     """
     if not isinstance(min_ep, list):
         if max_ep == -1:
