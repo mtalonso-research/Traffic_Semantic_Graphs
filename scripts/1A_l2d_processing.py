@@ -3,7 +3,7 @@ from src.data_processing.l2d_load_data import data_downloader
 from src.data_processing.l2d_process_pqts import process_tabular_data
 from src.data_processing.l2d_process_tags import add_data_tags
 from src.data_processing.l2d_process_frames import process_frames
-
+from src.data_processing.l2d_process_lanes import process_lanes_directory
 from src.data_processing.l2d_generate_graphs import generate_graphs
 from src.data_processing.l2d_annotation_processing import process_annotations_directory
 
@@ -12,11 +12,12 @@ def default_l2d_processing(min_ep, max_ep=-1,
                            run_tabular=False,
                            run_tags=False,
                            run_frames=False,
+                           run_lanes=False,
                            run_annotations=False,
                            run_graphs=False):
     
-    if not any([run_download, run_tabular, run_tags, run_frames, run_annotations, run_graphs]):
-        run_download = run_tabular = run_tags = run_frames = run_annotations = run_graphs = True
+    if not any([run_download, run_tabular, run_tags, run_frames, run_lanes, run_annotations, run_graphs]):
+        run_download = run_tabular = run_tags = run_frames = run_lanes = run_annotations = run_graphs = True
 
     if run_download:
         print("========== Downloading Data ==========")
@@ -66,11 +67,24 @@ def default_l2d_processing(min_ep, max_ep=-1,
                        input_base_dir='./data/raw/L2D/frames',
                        output_base_dir='./data/processed_frames/L2D')
 
+    if run_lanes:
+        if max_ep == -1: verbose = True
+        else: verbose = False
+        print("========== Processing Lanes ==========")
+        process_lanes_directory(min_ep, max_ep,
+                                raw_frames_dir='./data/raw/L2D/frames',
+                                yolo_annotations_dir='./data/processed_frames/L2D',
+                                output_dir='./data/processed_frames/L2D_lanes',
+                                verbose=verbose)
+
     if run_annotations:
         print("========== Processing Annotations ==========")
         process_annotations_directory(min_ep, max_ep,
-            input_dir='./data/processed_frames/L2D',
-            output_dir='./data/annotations/L2D'
+            input_dir_original='./data/processed_frames/L2D',
+            input_dir_lanes='./data/processed_frames/L2D_lanes',
+            output_dir='./data/annotations/L2D',
+            original_annotations_folder_name='front_left_Annotations',
+            lanes_annotations_folder_name='front_left_Enhanced_LaneAnnotations'
         )
 
     if run_graphs:
@@ -89,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument("--process_tabular", action="store_true", help="Run tabular data processing step.")
     parser.add_argument("--add_tags", action="store_true", help="Run tag processing step.")
     parser.add_argument("--process_frames", action="store_true", help="Run frame processing step.")
-
+    parser.add_argument("--process_lanes", action="store_true", help="Run lane processing step.")
     parser.add_argument("--process_annotations", action="store_true", help="Run annotation processing step.")
     parser.add_argument("--generate_graphs", action="store_true", help="Run graph generation step.")
     parser.add_argument("--all", action="store_true", help="Run all steps (default if no flags are set).")
@@ -105,6 +119,7 @@ if __name__ == "__main__":
         run_tabular=args.process_tabular or args.all,
         run_tags=args.add_tags or args.all,
         run_frames=args.process_frames or args.all,
+        run_lanes=args.process_lanes or args.all,
         run_annotations=args.process_annotations or args.all,
         run_graphs=args.generate_graphs or args.all
     )

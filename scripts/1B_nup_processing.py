@@ -11,6 +11,14 @@ from src.data_processing.nup_process_jsons import (
     add_temporal_features,
 )
 from src.data_processing.nup_process_tags import extract_tags
+from src.data_processing.nup_process_jsons import (
+    add_latlon_to_graphs,
+    enrich_weather_features,
+    replace_weather_code_with_description,
+    add_temporal_features,
+)
+from src.data_processing.nup_process_tags import extract_tags
+from src.data_processing.nup_process_edges import process_edges
 from src.data_processing.nup_process_edges import process_edges
 
 import glob
@@ -18,8 +26,8 @@ import glob
 def default_nuplan_processing(city, file_min=0, file_max=None, episodes=None, run_extract=True, run_enrich=True, run_latlon=True, run_weather=True, run_weather_codes=True, run_temporal=True, run_tags=True, run_edges=True):
 
     db_dir = f"./data/raw/NuPlan/train_{city}/nuplan-v1.1/train"
-    graph_dir = f"./data/graphical/nuplan_{city}"
-    tag_dir = f"./data/semantic_tags/nuplan_{city}"
+    graph_dir = f"./data/graphical/nuplan_{city}_trial"
+    tag_dir = f"./data/semantic_tags/nuplan_{city}_trial"
     os.makedirs(graph_dir, exist_ok=True)
     os.makedirs(tag_dir, exist_ok=True)
 

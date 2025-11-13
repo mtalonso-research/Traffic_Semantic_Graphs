@@ -230,6 +230,17 @@ def build_graph_json(parquet_path,aux_paths,image_lookup,output_path=None,graph_
                     "dist_to_ego": dist_to_ego,
                 }
 
+                # Add lane_classification feature
+                lane_classification_str = attrs.get("lane_classification")
+                lane_classification_int = -1  # Default for unknown
+                if lane_classification_str == 'out_of_lane_left':
+                    lane_classification_int = 0
+                elif lane_classification_str == 'in_lane':
+                    lane_classification_int = 1
+                elif lane_classification_str == 'out_of_lane_right':
+                    lane_classification_int = 2
+                veh_features["lane_classification"] = lane_classification_int
+
                 veh_features = {k: v for k, v in veh_features.items() if v is not None}
 
                 graph["nodes"]["vehicle"].append({"id": node_id, "features": veh_features})

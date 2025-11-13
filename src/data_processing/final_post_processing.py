@@ -513,7 +513,8 @@ def veh_processing_l2d(input_dir, annotation_root):
                 # Step 4d: Assemble Final Features
                 processed_features = {
                     'x': x, 'y': y, 'vx': vx, 'vy': vy,
-                    'speed': speed, 'dist_to_ego': dist_to_ego
+                    'speed': speed, 'dist_to_ego': dist_to_ego,
+                    'lane_classification': vehicle['features'].get('lane_classification', -1)
                 }
                 processed_vehicle_frames.append({'id': vehicle['id'], 'features': processed_features, 'type': 'vehicle'})
 
