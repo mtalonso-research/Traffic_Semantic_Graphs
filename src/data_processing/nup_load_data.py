@@ -376,14 +376,7 @@ def enrich_graphs_with_api_data(mappings: list, db_dir: str, out_dir: str):
     """
     from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
     from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
-
-    class DummyWorker:
-        def __init__(self):
-            self.number_of_threads = 0
-        def map(self, fn, inputs):
-            return [fn(x) for x in inputs]
-        def submit(self, fn, *args, **kwargs):
-            return fn(*args, **kwargs)
+    from src.utils import DummyWorker
 
     if not mappings:
         print("No mappings provided for enrichment. Skipping API enrichment.")

@@ -166,6 +166,9 @@ def extract_tags(data_root, output_dir, graph_dir):
             scene_token_hex = scene_token_bytes.hex()
         except (ValueError, SyntaxError):
             scene_token_hex = scene_token_str
+        except:
+            print(f'Could not Process {json_file_name}')
+            continue
 
         db_path = os.path.join(data_root, db_name)
         if not os.path.exists(db_path):
@@ -176,9 +179,13 @@ def extract_tags(data_root, output_dir, graph_dir):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        scene_token_bytes = bytes.fromhex(scene_token_hex)
-        cursor.execute("SELECT type FROM scenario_tag WHERE lidar_pc_token IN (SELECT token FROM lidar_pc WHERE scene_token=?)", (scene_token_bytes,))
-        raw_tags = [row[0] for row in cursor.fetchall()]
+        try:
+            scene_token_bytes = bytes.fromhex(scene_token_hex)
+            cursor.execute("SELECT type FROM scenario_tag WHERE lidar_pc_token IN (SELECT token FROM lidar_pc WHERE scene_token=?)", (scene_token_bytes,))
+            raw_tags = [row[0] for row in cursor.fetchall()]
+        except:
+            print(f'Could not Process {json_file_name}')
+            continue
 
         conn.close()
 

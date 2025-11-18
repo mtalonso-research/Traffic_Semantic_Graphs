@@ -333,3 +333,14 @@ def flatten_and_clean_values(col, series):
         else:
             values.add(item)
     return values
+
+class DummyWorker:
+    """
+    A dummy worker that can be used for multiprocessing tasks when running in a single thread.
+    """
+    def __init__(self):
+        self.number_of_threads = 0
+    def map(self, fn, inputs):
+        return [fn(x) for x in inputs]
+    def submit(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
