@@ -115,7 +115,7 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
 
         # Build expected tag filename: "episode_025001.json"
         #tag_fname = f"episode_{episode_idx:06d}.json"
-        tag_fname = f"{episode_idx}_graph.json"
+        tag_fname = f"episode_{episode_idx:06}.json"
         tag_path = os.path.join(tag_dir, tag_fname)
 
         if not os.path.exists(tag_path):
