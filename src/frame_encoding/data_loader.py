@@ -8,69 +8,70 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
+import os
+import json
+import glob
+from typing import List, Tuple
+
+from PIL import Image
+import torch
+from torch.utils.data import Dataset
+
+
 class EpisodeDataset(Dataset):
-    """
-    One sample = one episode.
-    Returns:
-        frames:  (T, C, H, W) float tensor
-        target:  (K,) long tensor
-        episode_id: str
-    """
     def __init__(
         self,
         root_dir: str,
         labels_json_path: str,
         transform=None,
-        episode_dir_format: str = "Episode{episode_id:06d}/observation.images.front_left",
+        episode_dir_format: str = "Episode{episode_id:06d}",
     ):
         """
         Args:
-            root_dir: directory containing Episode*/ subfolders.
-            labels_json_path: path to JSON mapping {episode_id_str: [label_0, ..., label_K-1]}.
-            transform: torchvision-style transform applied to each frame (PIL -> tensor).
-            episode_dir_format: how to map an integer episode_id to folder name.
-                Default: Episode000123 for id "123".
-                If your folders are named differently (e.g. "Episode27441"),
-                change this to "Episode{episode_id}".
+            root_dir: directory containing episode subfolders.
+            labels_json_path: JSON mapping {episode_id_str: [label_0, ..., label_K-1]}.
+            transform: torchvision-style transform applied to each frame.
+            episode_dir_format: format string to map int episode_id -> subdir name.
+                E.g. "Episode{episode_id:06d}" or "Episode{episode_id:06d}/observation.images.front_left".
         """
         self.root_dir = root_dir
         self.transform = transform
         self.episode_dir_format = episode_dir_format
 
-        # Load label dict
         with open(labels_json_path, "r") as f:
             raw_labels = json.load(f)
 
-        # Sort episode IDs numerically for reproducibility
-        # Keys are strings; convert to int for sorting
+        # sort keys numerically for reproducibility
         self.episode_ids: List[str] = sorted(raw_labels.keys(), key=lambda x: int(x))
-
-        # Build an internal list of (episode_id, frame_paths, label_tensor)
         self.samples = []
+
+        skipped_missing_dir = 0
+        skipped_no_frames = 0
+
         for eid in self.episode_ids:
             int_id = int(eid)
 
-            # Map JSON episode ID -> subdirectory name
-            episode_dir_name = episode_dir_format.format(episode_id=int_id)
-            episode_dir = os.path.join(root_dir, episode_dir_name)
+            # Map episode id -> folder pattern
+            episode_rel = episode_dir_format.format(episode_id=int_id)
+            episode_dir = os.path.join(root_dir, episode_rel)
 
             if not os.path.isdir(episode_dir):
-                raise FileNotFoundError(
-                    f"Episode directory not found: {episode_dir} "
-                    f"(episode id {eid}, mapped name '{episode_dir_name}')"
+                print(
+                    f"[EpisodeDataset] WARNING: episode dir not found, skipping: "
+                    f"{episode_dir} (episode id {eid}, mapped '{episode_rel}')"
                 )
+                skipped_missing_dir += 1
+                continue
 
-            # Collect all jpg frames for this episode
-            frame_paths = sorted(
-                glob.glob(os.path.join(episode_dir, "*.jpg"))
-            )
-
+            frame_paths = sorted(glob.glob(os.path.join(episode_dir, "*.jpg")))
             if len(frame_paths) == 0:
-                raise RuntimeError(f"No .jpg frames found in {episode_dir}")
+                print(
+                    f"[EpisodeDataset] WARNING: no .jpg frames in {episode_dir}, skipping episode {eid}"
+                )
+                skipped_no_frames += 1
+                continue
 
-            # Convert label list to tensor
-            label_list = raw_labels[eid]
-            target = torch.tensor(label_list, dtype=torch.long)
+            target = torch.tensor(raw_labels[eid], dtype=torch.long)
 
             self.samples.append(
                 {
@@ -80,10 +81,24 @@ class EpisodeDataset(Dataset):
                 }
             )
 
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                "EpisodeDataset found no valid episodes with frames. "
+                f"Skipped {skipped_missing_dir} with missing dirs and "
+                f"{skipped_no_frames} with no frames. "
+                "Check your root_dir / episode_dir_format / labels_json_path."
+            )
+
+        print(
+            f"[EpisodeDataset] Loaded {len(self.samples)} episodes "
+            f"(skipped {skipped_missing_dir} missing-dir, "
+            f"{skipped_no_frames} no-frames)."
+        )
+
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
+    def __getitem__(self, idx: int):
         sample = self.samples[idx]
         frame_paths = sample["frame_paths"]
         target = sample["target"]
@@ -92,18 +107,12 @@ class EpisodeDataset(Dataset):
         frames = []
         for fp in frame_paths:
             img = Image.open(fp).convert("RGB")
-            if self.transform is not None:
-                img = self.transform(img)
-            else:
-                # If no transform is provided, convert to a simple tensor [0,1]
-                img = torch.from_numpy(
-                    (np.array(img).astype("float32") / 255.0).transpose(2, 0, 1)
-                )
+            if self.transform is None:
+                raise RuntimeError("EpisodeDataset requires a transform (e.g. Resize+ToTensor+Normalize).")
+            img = self.transform(img)
             frames.append(img)
 
-        # Stack into (T, C, H, W)
-        frames_tensor = torch.stack(frames, dim=0)
-
+        frames_tensor = torch.stack(frames, dim=0)  # (T, C, H, W)
         return frames_tensor, target, episode_id
     
 from typing import List, Tuple

@@ -304,13 +304,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--best_model_path",
         type=str,
-        default="./checkpoints/best_model.pt",
+        default="./models/frame_encoder/best_model.pt",
         help="Path to save / load the best model checkpoint.",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./embeddings_out",
+        default=f"./data/frame_embeddings/L2D",
         help="Directory to save extracted embeddings.",
     )
     parser.add_argument(
