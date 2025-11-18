@@ -33,23 +33,22 @@ def run_task(args):
             output_dir=f'./data/frame_targets/{args.dataset}/'
         )
 
-    train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),  # (C,H,W) in [0,1]
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
-    ])
-
-    dataset = EpisodeDataset(
-        root_dir=f"./data/raw/{args.dataset}/frames",
-        labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
-        transform=train_transform,
-    )
-
-    # --------- Train encoder ----------
     if args.train_encoder:
+        train_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),  # (C,H,W) in [0,1]
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ])
+
+        dataset = EpisodeDataset(
+            root_dir=f"./data/raw/{args.dataset}/frames",
+            labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
+            transform=train_transform,
+        )
+
         rng = np.random.default_rng(args.seed)
         indices = np.arange(len(dataset))
         rng.shuffle(indices)
@@ -132,6 +131,20 @@ def run_task(args):
                 print(f"  -> New best model saved to {args.best_model_path}")
 
     if args.evaluate:
+        train_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),  # (C,H,W) in [0,1]
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ])
+
+        dataset = EpisodeDataset(
+            root_dir=f"./data/raw/{args.dataset}/frames",
+            labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
+            transform=train_transform,
+        )
         model = MultiTaskClipModel(
             num_classes_per_task=args.num_classes_per_task,
             z_dim=args.z_dim,

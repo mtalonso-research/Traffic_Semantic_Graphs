@@ -3,6 +3,7 @@ import json
 import math
 import matplotlib.pyplot as plt
 from collections import Counter
+from tqdm import tqdm
 
 def bin_vehicle_count(n):
     """Bins number of vehicles into 4 categories."""
@@ -98,7 +99,7 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
 
     targets = {}
 
-    for fname in os.listdir(graph_dir):
+    for fname in tqdm(os.listdir(graph_dir)):
         if not fname.endswith("_graph.json"):
             continue
 
