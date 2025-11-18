@@ -24,7 +24,7 @@ class EpisodeDataset(Dataset):
         root_dir: str,
         labels_json_path: str,
         transform=None,
-        episode_dir_format: str = "Episode{episode_id:06d}",
+        episode_dir_format: str = "Episode{episode_id:06d}/observation.images.front_left",
     ):
         """
         Args:
