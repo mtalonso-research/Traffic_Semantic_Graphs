@@ -32,6 +32,7 @@ logs/
 wandb/
 runs/
 checkpoints/
+lib/
 *.ckpt
 *.pth
 *.pt
@@ -70,6 +71,7 @@ samples/
 *.bak
 *.tmp
 *.out
+.DS_Store
 
 GEMINI.md
 Project_Organization_Sheet.numbers
