@@ -149,27 +149,43 @@ def ego_processing_nup(input_dir, output_dir):
             # Step 3a: Estimate Heading if missing
             if heading is None:
                 heading_is_estimated = True
-                current_pos = (feat.get("x") or 0.0, feat.get("y") or 0.0)
                 
-                # Use displacement to estimate heading
-                if i > 0:
-                    prev_feat = egos[i-1]["features"]
-                    prev_pos = (prev_feat.get("x") or 0.0, prev_feat.get("y") or 0.0)
-                    dx = current_pos[0] - prev_pos[0]
-                    dy = current_pos[1] - prev_pos[1]
-                else: # For the first frame, use the next frame
-                    next_feat = egos[i+1]["features"]
-                    next_pos = (next_feat.get("x") or 0.0, next_feat.get("y") or 0.0)
-                    dx = next_pos[0] - current_pos[0]
-                    dy = next_pos[1] - current_pos[1]
-                
-                if abs(dx) > 1e-6 or abs(dy) > 1e-6:
-                    heading = math.atan2(dy, dx)
-                elif last_known_heading is not None:
+                if last_known_heading is not None: # New priority: use last_known_heading first
                     heading = last_known_heading
-                else: # Fallback for stationary start
-                    heading = 0.0
-                    print(f"⚠️ Warning: Cannot estimate heading for stationary start in {fname}. Defaulting to 0.")
+                else: # If no last_known_heading, try displacement
+                    # --- Displacement-based Heading Estimation ---
+                    # To improve stability, we use a centered difference method where possible.
+                    dx, dy = 0.0, 0.0
+
+                    # Case 1: Centered difference (most common case)
+                    if i > 0 and i + 1 < len(egos):
+                        prev_feat = egos[i-1]["features"]
+                        next_feat = egos[i+1]["features"]
+                        # Check if coordinates exist to avoid errors
+                        if all(k in prev_feat and k in next_feat for k in ('x', 'y')):
+                            dx = (next_feat.get("x") or 0.0) - (prev_feat.get("x") or 0.0)
+                            dy = (next_feat.get("y") or 0.0) - (prev_feat.get("y") or 0.0)
+
+                    # Case 2: Backward difference (for the last frame)
+                    elif i > 0:
+                        prev_feat = egos[i-1]["features"]
+                        if all(k in prev_feat and k in feat for k in ('x', 'y')):
+                            dx = (feat.get("x") or 0.0) - (prev_feat.get("x") or 0.0)
+                            dy = (feat.get("y") or 0.0) - (prev_feat.get("y") or 0.0)
+
+                    # Case 3: Forward difference (for the first frame)
+                    elif i + 1 < len(egos):
+                        next_feat = egos[i+1]["features"]
+                        if all(k in next_feat and k in feat for k in ('x', 'y')):
+                            dx = (next_feat.get("x") or 0.0) - (feat.get("x") or 0.0)
+                            dy = (next_feat.get("y") or 0.0) - (feat.get("y") or 0.0)
+                    
+                    # Calculate heading from displacement
+                    if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                        heading = math.atan2(dy, dx)
+                    else: # Fallback if no displacement can be calculated
+                        heading = 0.0
+                        print(f"⚠️ Warning: Cannot estimate heading from displacement in {fname} (frame {i}). Defaulting to 0.")
             
             if heading is not None:
                 last_known_heading = heading

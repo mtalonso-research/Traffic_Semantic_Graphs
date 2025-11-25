@@ -6,6 +6,9 @@ import os
 import numpy as np
 from tqdm import tqdm
 import sys
+import wandb  
+import yaml 
+from torch.utils.data import ConcatDataset
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -23,6 +26,28 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def run_task(args):
 
+    # --- wandb init / sweeps ---
+    wandb_run = None
+    if args.use_wandb and args.wandb_mode != "disabled" and args.train_encoder:
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity or None,
+            name=args.wandb_run_name or None,
+            group=args.wandb_group or None,
+            mode=args.wandb_mode,
+            config=vars(args),
+        )
+        # Let sweeps override CLI arguments
+        cfg = wandb.config
+        for k, v in cfg.items():
+            setattr(args, k, v)
+
+    if args.train_encoder:
+        print("Final args used for this run:")
+        for k, v in sorted(vars(args).items()):
+            print(f"  {k}: {v}")
+
+    # After possible override, use args as the single source of truth
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -43,11 +68,53 @@ def run_task(args):
             ),
         ])
 
-        dataset = EpisodeDataset(
-            root_dir=f"./data/raw/{args.dataset}/frames",
-            labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
-            transform=train_transform,
-        )
+        if args.dataset == 'L2D':
+            dataset = EpisodeDataset(
+                root_dir=f"./data/raw/{args.dataset}/frames",
+                labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
+                transform=train_transform,
+                episode_dir_format = "Episode{episode_id:06d}/observation.images.front_left",
+                domain_name="L2D",
+            )
+        elif args.dataset == 'NuPlan':
+            dataset = EpisodeDataset(
+                root_dir=f"./data/raw/{args.dataset}/frames",
+                labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
+                transform=train_transform,
+                frames_per_sample=10,
+                samples_per_episode=10,
+                min_frame_gap=30,
+                domain_name="NuPlan",
+            )
+        elif args.dataset == 'mix':
+            l2d_dataset = EpisodeDataset(
+                root_dir=f"./data/raw/L2D/frames",
+                labels_json_path=f"./data/frame_targets/L2D/targets.json",
+                transform=train_transform,
+                episode_dir_format = "Episode{episode_id:06d}/observation.images.front_left",
+                domain_name="L2D",
+            )
+            nup_dataset = EpisodeDataset(
+                root_dir=f"./data/raw/NuPlan/frames",
+                labels_json_path=f"./data/frame_targets/NuPlan/targets.json",
+                transform=train_transform,
+                frames_per_sample=10,
+                samples_per_episode=4,
+                min_frame_gap=30,
+                domain_name="NuPlan",
+            )
+
+            num_l2d = len(l2d_dataset)
+            num_nup = len(nup_dataset)
+            target_l2d = min(num_l2d, num_nup)
+            rng = np.random.default_rng(args.seed)
+            l2d_indices = np.arange(num_l2d)
+            rng.shuffle(l2d_indices)
+            l2d_train_indices = l2d_indices[:target_l2d]
+            l2d_subset = Subset(l2d_dataset, l2d_train_indices)
+            dataset = ConcatDataset([l2d_subset, nup_dataset])
+            
+        else: print('DID NOT RECOGNIZE THE DATASET!!')
 
         rng = np.random.default_rng(args.seed)
         indices = np.arange(len(dataset))
@@ -84,6 +151,22 @@ def run_task(args):
             z_dim=args.z_dim,
             encoder_name=args.encoder_name,
             pretrained=not args.no_pretrained,
+            # NEW: frame head config
+            frame_head_hidden_dims=args.frame_head_hidden_dims,
+            frame_head_activation=args.frame_head_activation,
+            frame_head_dropout=args.frame_head_dropout,
+            # NEW: pooling config
+            pooling=args.pooling,
+            num_pool_heads=args.num_pool_heads,
+            pool_hidden_dim=args.pool_hidden_dim,
+            pool_dropout=args.pool_dropout,
+            pool_temperature_init=args.pool_temperature_init,
+            # NEW: task head config
+            task_head_hidden_dims=args.task_head_hidden_dims,
+            task_head_activation=args.task_head_activation,
+            task_head_dropout=args.task_head_dropout,
+            # NEW: encoder freezing
+            encoder_trainable=args.encoder_trainable,
         ).to(device)
 
         optimizer = torch.optim.Adam(
@@ -124,6 +207,20 @@ def run_task(args):
                 f"{acc_str}"
             )
 
+            # --- wandb logging ---
+            if wandb_run is not None:
+                log_dict = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "mean_acc": mean_acc,
+                    "best_val_loss": best_val_loss,
+                    "lr": optimizer.param_groups[0]["lr"],
+                }
+                for k, acc in enumerate(acc_per_task):
+                    log_dict[f"task_acc_{k}"] = acc
+                wandb.log(log_dict, step=epoch)
+
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 os.makedirs(os.path.dirname(args.best_model_path), exist_ok=True)
@@ -140,16 +237,65 @@ def run_task(args):
             ),
         ])
 
-        dataset = EpisodeDataset(
-            root_dir=f"./data/raw/{args.dataset}/frames",
-            labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
-            transform=train_transform,
-        )
+        if args.dataset == 'L2D':
+            dataset = EpisodeDataset(
+                root_dir=f"./data/raw/{args.dataset}/frames",
+                labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
+                transform=train_transform,
+                episode_dir_format = "Episode{episode_id:06d}/observation.images.front_left",
+                domain_name="L2D",
+            )
+        elif args.dataset == 'NuPlan':
+            dataset = EpisodeDataset(
+                root_dir=f"./data/raw/{args.dataset}/frames",
+                labels_json_path=f"./data/frame_targets/{args.dataset}/targets.json",
+                transform=train_transform,
+                frames_per_sample=10,
+                samples_per_episode=10,
+                min_frame_gap=30,
+                domain_name="NuPlan",
+            )
+        elif args.dataset == 'mix':
+            l2d_dataset = EpisodeDataset(
+                root_dir=f"./data/raw/L2D/frames",
+                labels_json_path=f"./data/frame_targets/L2D/targets.json",
+                transform=train_transform,
+                episode_dir_format = "Episode{episode_id:06d}/observation.images.front_left",
+                domain_name="L2D",
+            )
+            nup_dataset = EpisodeDataset(
+                root_dir=f"./data/raw/NuPlan/frames",
+                labels_json_path=f"./data/frame_targets/NuPlan/targets.json",
+                transform=train_transform,
+                frames_per_sample=10,
+                samples_per_episode=4,
+                min_frame_gap=30,
+                domain_name="NuPlan",
+            )
+            dataset = ConcatDataset([l2d_dataset, nup_dataset])
+        else: print('DID NOT RECOGNIZE THE DATASET!!')
+
         model = MultiTaskClipModel(
             num_classes_per_task=args.num_classes_per_task,
             z_dim=args.z_dim,
             encoder_name=args.encoder_name,
-            pretrained=False,  # weights will be loaded from checkpoint
+            pretrained=not args.no_pretrained,
+            # NEW: frame head config
+            frame_head_hidden_dims=args.frame_head_hidden_dims,
+            frame_head_activation=args.frame_head_activation,
+            frame_head_dropout=args.frame_head_dropout,
+            # NEW: pooling config
+            pooling=args.pooling,
+            num_pool_heads=args.num_pool_heads,
+            pool_hidden_dim=args.pool_hidden_dim,
+            pool_dropout=args.pool_dropout,
+            pool_temperature_init=args.pool_temperature_init,
+            # NEW: task head config
+            task_head_hidden_dims=args.task_head_hidden_dims,
+            task_head_activation=args.task_head_activation,
+            task_head_dropout=args.task_head_dropout,
+            # NEW: encoder freezing
+            encoder_trainable=args.encoder_trainable,
         ).to(device)
 
         print(f"Loading model from {args.best_model_path}")
@@ -165,6 +311,20 @@ def run_task(args):
             collate_fn=collate_episodes,
             pin_memory=args.pin_memory,
         )
+
+        val_loss, acc_per_task, mean_acc = evaluate(
+            model,
+            full_loader,
+            device,
+            label_smoothing=args.label_smoothing,
+            task_weights=args.task_weights,
+        )
+
+        print(f"Evaluation results:")
+        print(f"  val_loss = {val_loss:.4f}")
+        for k, acc in enumerate(acc_per_task):
+            print(f"  task{k}_acc = {acc:.4f}")
+        print(f"  mean_acc = {mean_acc:.4f}")
 
         clip_embeddings = {}   # episode_id -> (z_dim,)
         frame_embeddings = {}  # episode_id -> (T_i, z_dim)
@@ -186,6 +346,9 @@ def run_task(args):
 
         print(f"Saved clip and frame embeddings to {args.output_dir}/")
 
+    if wandb_run is not None:
+        wandb_run.finish()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -195,7 +358,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="L2D",
+        default="null",
         help="Dataset name (used in paths under ./data/).",
     )
     parser.add_argument(
@@ -271,7 +434,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=20,
+        default=5,
         help="Number of training epochs.",
     )
     parser.add_argument(
@@ -300,6 +463,85 @@ if __name__ == "__main__":
         help="Optional per-task weights, e.g. --task_weights 1.0 1.0 0.5 1.0 1.0",
     )
 
+    # NEW: model architecture hyperparams
+    parser.add_argument(
+        "--frame_head_hidden_dims",
+        nargs="+",
+        type=int,
+        default=[512],
+        help="Hidden dims for frame head MLP, e.g. --frame_head_hidden_dims 512 256",
+    )
+    parser.add_argument(
+        "--frame_head_activation",
+        type=str,
+        default="relu",
+        choices=["relu", "gelu", "tanh", "sigmoid"],
+        help="Activation for frame head MLP.",
+    )
+    parser.add_argument(
+        "--frame_head_dropout",
+        type=float,
+        default=0.0,
+        help="Dropout for frame head MLP.",
+    )
+    parser.add_argument(
+        "--pooling",
+        type=str,
+        default="mean",
+        choices=["mean", "max", "meanmax", "attn", "multihead_attn", "lse", "gated"],
+        help="Temporal pooling strategy.",
+    )
+    parser.add_argument(
+        "--num_pool_heads",
+        type=int,
+        default=4,
+        help="Number of heads for multihead_attn pooling.",
+    )
+    parser.add_argument(
+        "--pool_hidden_dim",
+        type=int,
+        default=128,
+        help="Hidden dim for gated pooling.",
+    )
+    parser.add_argument(
+        "--pool_dropout",
+        type=float,
+        default=0.0,
+        help="Dropout for attention/gated pooling.",
+    )
+    parser.add_argument(
+        "--pool_temperature_init",
+        type=float,
+        default=1.0,
+        help="Initial temperature for LSE pooling.",
+    )
+    parser.add_argument(
+        "--task_head_hidden_dims",
+        nargs="*",
+        type=int,
+        default=[],
+        help="Hidden dims for task head MLP, empty means single linear layer.",
+    )
+    parser.add_argument(
+        "--task_head_activation",
+        type=str,
+        default="relu",
+        choices=["relu", "gelu", "tanh", "sigmoid"],
+        help="Activation for task head MLP.",
+    )
+    parser.add_argument(
+        "--task_head_dropout",
+        type=float,
+        default=0.0,
+        help="Dropout for task head MLP.",
+    )
+    parser.add_argument(
+        "--encoder_trainable",
+        type=str,
+        default="all",
+        help='Encoder training mode: "all", "none", or "partial:N".',
+    )
+
     # Paths, seed, outputs
     parser.add_argument(
         "--best_model_path",
@@ -310,7 +552,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=f"./data/frame_embeddings/L2D",
+        default="./data/frame_embeddings/L2D",
         help="Directory to save extracted embeddings.",
     )
     parser.add_argument(
@@ -320,7 +562,68 @@ if __name__ == "__main__":
         help="Random seed for numpy and torch.",
     )
 
+    # NEW: wandb args
+    parser.add_argument(
+        "--use_wandb",
+        action="store_true",
+        default=False,
+        help="Enable Weights & Biases logging and sweeps.",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=None,
+        help="wandb project name.",
+    )
+    parser.add_argument(
+        "--wandb_entity",
+        type=str,
+        default=None,
+        help="wandb entity (user or team).",
+    )
+    parser.add_argument(
+        "--wandb_run_name",
+        type=str,
+        default=None,
+        help="Optional wandb run name.",
+    )
+    parser.add_argument(
+        "--wandb_group",
+        type=str,
+        default=None,
+        help="Optional group name for this run.",
+    )
+    parser.add_argument(
+        "--wandb_mode",
+        type=str,
+        default="online",
+        choices=["online", "offline", "disabled"],
+        help="wandb mode.",
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional YAML config file to override/default arguments.",
+    )
+
     args = parser.parse_args()
+
+    if args.config is not None:
+        with open(args.config, "r") as f:
+            cfg = yaml.safe_load(f)
+
+        for k, v in cfg.items():
+            if not hasattr(args, k):
+                print(f"Warning: key '{k}' in config not found in argparse args; ignoring.")
+                continue
+
+            default_val = parser.get_default(k)
+            current_val = getattr(args, k)
+
+            if current_val == default_val:
+                setattr(args, k, v)
 
     if args.task_weights is not None:
         if len(args.task_weights) != len(args.num_classes_per_task):

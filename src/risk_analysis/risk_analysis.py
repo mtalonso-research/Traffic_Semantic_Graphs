@@ -233,9 +233,12 @@ class RiskAnalysis:
         """
         # Step 1: Get the environmental features
         f = env.get("features", {})
-        code = int(f.get("conditions", self.default_weather_code))
-        precip = float(f.get("precipitation", self.default_precip_mm))
-        daylight = bool(f.get("daylight", self.default_is_daylight))
+        try: code = int(f.get("conditions", self.default_weather_code))
+        except: code = int(self.default_weather_code)
+        try: precip = float(f.get("precipitation", self.default_precip_mm))
+        except: precip = float(self.default_precip_mm)
+        try: daylight = bool(f.get("daylight", self.default_is_daylight))
+        except: daylight = bool(self.default_is_daylight)
 
         # Step 2: Compute the visibility factor
         props = self.weather_code_map.get(code, self.default_weather_props)
@@ -255,8 +258,10 @@ class RiskAnalysis:
         """
         # Step 1: Get the environmental features
         f = env.get("features", {})
-        code = int(f.get("conditions", self.default_weather_code))
-        precip = float(f.get("precipitation", self.default_precip_mm))
+        try: code = int(f.get("conditions", self.default_weather_code))
+        except: code = int(self.default_weather_code)
+        try: precip = float(f.get("precipitation", self.default_precip_mm))
+        except: precip = float(self.default_precip_mm)
         desc = {0:'clear',1:'overcast',2:'raining',3:'snow',4:'fog'}[code]
 
         # Step 2: Compute the friction factor

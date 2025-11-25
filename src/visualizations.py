@@ -142,7 +142,8 @@ def visualize_frames(frames_data, use_lat_lon=False, diagnostics=None, scene_ris
             first_frame = frames_data[0]
             env_features = first_frame.get("environment", {}).get("features", {})
             code = env_features.get('conditions', 0)
-            weather_desc = {0:'clear',1:'overcast',2:'raining',3:'snow',4:'fog'}[code]
+            try: weather_desc = {0:'clear',1:'overcast',2:'raining',3:'snow',4:'fog'}[code]
+            except: weather_desc = 'not processed yet'
 
         labels = {
             'plot_x': 'Longitude' if use_lat_lon else 'X Coordinate',
@@ -308,13 +309,13 @@ def scene_visualizer(dataset_path, episode, frame=None, analyzer=None):
         current_frame = frames[frame]
         
         if analyzer:
-            try:
+            #try:
                 risk, diags, _, _ = analyzer.analyze_frame(current_frame)
                 diagnostics = diags
                 scene_risk = risk
                 print(f"Analyzed frame {frame}. Max risk: {scene_risk:.3f}")
-            except Exception as e:
-                print(f"Error during frame analysis: {e}")
+            #except Exception as e:
+            #    print(f"Error during frame analysis: {e}")
                 
         fig = visualize_frames(
             current_frame, 
