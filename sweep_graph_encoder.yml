@@ -1,0 +1,44 @@
+
+program: scripts/4_graph_encoding.py
+method: random
+metric:
+  name: val_loss
+  goal: minimize
+parameters:
+  lr:
+    distribution: log_uniform
+    min: -9.21  # ~1e-4
+    max: -4.61  # ~1e-2
+  weight_decay:
+    distribution: log_uniform
+    min: -11.51 # ~1e-5
+    max: -6.91  # ~1e-3
+  hidden_dim:
+    values: [32, 64, 128]
+  embed_dim:
+    values: [16, 32, 64]
+  num_encoder_layers:
+    values: [1, 2, 3]
+  num_decoder_layers:
+    values: [1, 2, 3]
+  activation:
+    values: ["relu", "leaky_relu"]
+  dropout_rate:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  batch_size:
+    values: [16, 32, 64]
+command:
+  - ${env}
+  - python3
+  - ${program}
+  - --dataset
+  - L2D
+  - --train_encoder
+  - --num_epochs
+  - 10
+  - --use_wandb
+  - --kl_weight
+  - 0.1
+  - ${args}

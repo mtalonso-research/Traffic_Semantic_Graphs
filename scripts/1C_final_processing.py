@@ -1,12 +1,12 @@
 import argparse
 from src.data_processing.final_post_processing import (ego_processing_l2d, env_processing_l2d, veh_processing_l2d, ped_processing_l2d,
                                                                        ego_processing_nup, env_processing_nup, veh_processing_nup, ped_processing_nup, 
-                                                                       obj_processing_nup)
+                                                                       obj_processing_nup, combine_nuplan_data)
 from src.data_processing.filtering import filter_json_files, filter_episodes_by_frame_count
 
 def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_nuplan_pittsburgh=False, 
                           process_nuplan_las_vegas=False, process_nuplan_mini=False, process_nuplan_singapore=False,
-                          min_frames=5):
+                          should_combine_nuplan_data=False, nuplan_input_dirs=None, nuplan_output_dir=None, min_frames=5):
 
     if process_l2d:
         print('=========== Final Processing for L2D ============')
@@ -90,6 +90,10 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
         veh_processing_nup(input_dir=out_dir, raw_dir=in_dir)
         ped_processing_nup(input_dir=out_dir, raw_dir=in_dir)
         obj_processing_nup(input_dir=out_dir,raw_dir=in_dir)
+        
+    if should_combine_nuplan_data:
+        print('============ Combining nuPlan Datasets ============')
+        combine_nuplan_data(nuplan_input_dirs, nuplan_output_dir)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Final Processing of Graphical Data")
@@ -123,8 +127,24 @@ if __name__ == "__main__":
         action='store_true',
         help='Run nuPlan Singapore final processing'
     )
+    parser.add_argument(
+        '--combine_nuplan_data',
+        action='store_true',
+        help='Combine all nuPlan datasets'
+    )
+    parser.add_argument(
+        '--nuplan_input_dirs',
+        nargs='+',
+        help='List of nuPlan directories to combine'
+    )
+    parser.add_argument(
+        '--nuplan_output_dir',
+        type=str,
+        help='Output directory for combined nuPlan data'
+    )
     
     args = parser.parse_args()
     graph_post_processing(args.process_l2d, args.process_nuplan_boston, 
                           args.process_nuplan_pittsburgh, args.process_nuplan_las_vegas,
-                          args.process_nuplan_mini,args.process_nuplan_singapore)
+                          args.process_nuplan_mini,args.process_nuplan_singapore,
+                          args.combine_nuplan_data, args.nuplan_input_dirs, args.nuplan_output_dir)

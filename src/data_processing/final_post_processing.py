@@ -884,4 +884,51 @@ def obj_processing_nup(input_dir, raw_dir):
             json.dump(proc_data, f, indent=2)
 
     print("🏁 Object node NUP processing complete.")
+
+
+def combine_nuplan_data(input_dirs, output_dir):
+    """
+    Combines graph data from multiple nuPlan directories into a single directory.
+
+    This function reads all JSON graph files from a list of input directories,
+    adds metadata to indicate the original city, renumbers the graphs to ensure
+    uniqueness, and saves them to a new output directory.
+
+    Args:
+        input_dirs (list): A list of paths to the directories to be combined.
+        output_dir (str): The path to the directory where the combined and
+                          renumbered graphs will be saved.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    graph_counter = 0
+    
+    for input_dir in input_dirs:
+        city_name = os.path.basename(os.path.normpath(input_dir))
+        
+        for filename in tqdm(os.listdir(input_dir), desc=f"Processing {city_name}"):
+            if not filename.endswith('.json'):
+                continue
+
+            input_path = os.path.join(input_dir, filename)
+            
+            with open(input_path, 'r') as f:
+                data = json.load(f)
+            
+            # Add city metadata
+            if 'metadata' not in data:
+                data['metadata'] = {}
+            data['metadata']['city'] = city_name
+            
+            # Create new filename and save
+            new_filename = f"{graph_counter}_graph.json"
+            output_path = os.path.join(output_dir, new_filename)
+            
+            with open(output_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            graph_counter += 1
+            
+    print(f"✅ Combined {graph_counter} graphs from {len(input_dirs)} directories into {output_dir}")
+
     
