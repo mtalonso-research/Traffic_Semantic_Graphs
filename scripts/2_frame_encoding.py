@@ -385,8 +385,8 @@ if __name__ == "__main__":
         "--num_classes_per_task",
         nargs="+",
         type=int,
-        default=[5, 5, 5, 5, 5],
-        help="List of number of classes per task, e.g. --num_classes_per_task 5 5 5 5 5",
+        default=[5, 5, 1, 5, 1],
+        help="List of number of classes per task, e.g. --num_classes_per_task 5 5 1 5 1",
     )
     parser.add_argument(
         "--z_dim",

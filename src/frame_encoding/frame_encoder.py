@@ -352,22 +352,29 @@ def multitask_categorical_loss(
         target_k = targets[:, k]               # (B,)
         C_k = logits_k.size(-1)
 
-        if label_smoothing > 0.0:
-            eps = label_smoothing
-            # log probabilities
-            log_probs = F.log_softmax(logits_k, dim=-1)      # (B, C_k)
-            # one-hot with smoothing
-            with torch.no_grad():
-                true_dist = torch.zeros_like(log_probs)
-                true_dist.fill_(eps / (C_k - 1))
-                true_dist.scatter_(1, target_k.unsqueeze(1), 1.0 - eps)
-            loss_k = -(true_dist * log_probs).sum(dim=-1)    # (B,)
-        else:
-            loss_k = F.cross_entropy(
-                logits_k,
-                target_k,
+        if C_k == 1:  # Binary classification
+            loss_k = F.binary_cross_entropy_with_logits(
+                logits_k.squeeze(1),
+                target_k.float(),
                 reduction="none",
-            )                                                # (B,)
+            )
+        else:  # Multi-class classification
+            if label_smoothing > 0.0:
+                eps = label_smoothing
+                # log probabilities
+                log_probs = F.log_softmax(logits_k, dim=-1)      # (B, C_k)
+                # one-hot with smoothing
+                with torch.no_grad():
+                    true_dist = torch.zeros_like(log_probs)
+                    true_dist.fill_(eps / (C_k - 1))
+                    true_dist.scatter_(1, target_k.unsqueeze(1), 1.0 - eps)
+                loss_k = -(true_dist * log_probs).sum(dim=-1)    # (B,)
+            else:
+                loss_k = F.cross_entropy(
+                    logits_k,
+                    target_k,
+                    reduction="none",
+                )                                                # (B,)
 
         if sample_weights is not None:
             loss_k = loss_k * sample_weights.to(device)      # (B,)
@@ -461,7 +468,10 @@ def evaluate(
             # per-task accuracy
             for k in range(K):
                 logits_k = logits_per_task[k]       # (B, C_k)
-                preds_k = logits_k.argmax(dim=1)    # (B,)
+                if logits_k.size(-1) == 1:
+                    preds_k = (logits_k > 0).float().squeeze(1)
+                else:
+                    preds_k = logits_k.argmax(dim=1)    # (B,)
                 correct_per_task[k] += (preds_k == targets_batch[:, k]).sum().item()
 
             total_samples += B

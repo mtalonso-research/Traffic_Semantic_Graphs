@@ -24,7 +24,7 @@ def default_l2d_processing(min_ep, max_ep=-1,
         data_downloader(min_ep, max_ep, n_secs=3,
              features={"tabular": True,
                      "frames": {
-                         'observation.images.front_left': False,
+                         'observation.images.front_left': True,
                          'observation.images.left_backward': False,
                          'observation.images.left_forward': False,
                          'observation.images.map': False,

@@ -8,27 +8,27 @@ from tqdm import tqdm
 def bin_vehicle_count(n):
     """Bins number of vehicles into 4 categories."""
     if n <= 0:
-        return 0           # no vehicles
-    elif n <= 2:
-        return 1           # 1-2 vehicles
-    elif n <= 5:
-        return 2           # 3-5 vehicles
-    elif n<= 10:
+        return 0
+    elif n <= 1:
+        return 1
+    elif n <= 3:
+        return 2
+    elif n <= 7:
         return 3
     else:
-        return 4           # >5 vehicles
+        return 4
 
 def bin_distance(d):
     """Bins distance to closest agent (meters). None -> far bin."""
     if d is None or (isinstance(d, float) and math.isnan(d)):
         return 4           # treat missing as far
-    if d <= 2.0:
+    if d <= 0.3:
         return 0
-    elif d <= 5.0:
+    elif d <= 1.1:
         return 1
-    elif d <= 10.0:
+    elif d <= 2.4:
         return 2
-    elif d <= 20.0:
+    elif d <= 4.3:
         return 3
     else:
         return 4
@@ -37,13 +37,28 @@ def bin_speed(s):
     """Bins ego speed (assumed in m/s). None -> 0 bin."""
     if s is None or (isinstance(s, float) and math.isnan(s)):
         return 0
-    if s <= 1.0:
+    if s <= 4.0:
         return 0
-    elif s <= 5.0:
+    elif s <= 7.8:
         return 1
-    elif s <= 10.0:
+    elif s <= 12.3:
         return 2
-    elif s <= 15.0:
+    elif s <= 18.1:
+        return 3
+    else:
+        return 4
+
+def bin_ped_distance(d):
+    """Bins distance to closest agent (meters). None -> far bin."""
+    if d is None or (isinstance(d, float) and math.isnan(d)):
+        return 4           # treat missing as far
+    if d <= 0.39:
+        return 0
+    elif d <= 1.86:
+        return 1
+    elif d <= 3.84:
+        return 2
+    elif d <= 6.54:
         return 3
     else:
         return 4
@@ -80,7 +95,7 @@ def _base_id(node_dict):
         return parts[0]
     return raw
 
-def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.json"):
+def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.json", save_raw=False):
     """
     Iterate over all *_graph.json files in `graph_dir`, find the matching
     episode_XXXXXX.json in `tag_dir`, and extract:
@@ -94,10 +109,13 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
     Saves a single JSON file in `output_dir/output_filename` with:
       { "<episode_index>": [veh_count_bin, veh_dist_bin, ped_dist_bin,
                             ego_speed_bin, turn_cat], ... }
+    
+    If `save_raw` is True, also saves a `raw_targets.json` with the unbinned values.
     """
     os.makedirs(output_dir, exist_ok=True)
 
     targets = {}
+    raw_targets = {}
 
     for fname in tqdm(os.listdir(graph_dir)):
         if not fname.endswith("_graph.json"):
@@ -167,7 +185,7 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
                 ped_dists.append(d)
 
         min_ped_dist = min(ped_dists) if ped_dists else None
-        ped_dist_bin = bin_distance(min_ped_dist)
+        ped_dist_bin = bin_ped_distance(min_ped_dist)
         # If later you want a "pedestrian count bin", you'll have len(unique_ped_ids) here.
 
         # --- 4) Ego speed (mean across ego nodes) ---
@@ -187,6 +205,17 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
         action_tag = tags.get("action_tag", None)
         turn_cat = action_tag_to_category(action_tag)
 
+        # Binarize categories 3 and 5
+        if ped_dist_bin == 4:
+            ped_dist_bin = 0
+        else:
+            ped_dist_bin = 1
+
+        if turn_cat == 3:
+            turn_cat = 0
+        else:
+            turn_cat = 1
+
         targets[str(episode_idx)] = [
             veh_count_bin,
             veh_dist_bin,
@@ -194,12 +223,27 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
             ego_speed_bin,
             turn_cat,
         ]
+        
+        if save_raw:
+            raw_targets[str(episode_idx)] = [
+                num_vehicles,
+                min_veh_dist,
+                min_ped_dist,
+                mean_ego_speed,
+                action_tag,
+            ]
 
     out_path = os.path.join(output_dir, output_filename)
     with open(out_path, "w") as f:
         json.dump(targets, f, indent=2)
 
     print(f"Saved targets for {len(targets)} episodes to {out_path}")
+
+    if save_raw:
+        raw_out_path = os.path.join(output_dir, "raw_targets.json")
+        with open(raw_out_path, "w") as f:
+            json.dump(raw_targets, f, indent=2)
+        print(f"Saved raw targets for {len(raw_targets)} episodes to {raw_out_path}")
 
 def visualize_target_distribution(targets_path):
     with open(targets_path, "r") as f:
