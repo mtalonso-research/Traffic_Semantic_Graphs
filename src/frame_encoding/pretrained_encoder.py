@@ -50,8 +50,8 @@ class PretrainedEncoder:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-    def encode_frames(self, frame_paths):
-        embeddings = {}
+    def encode_frames(self, frame_paths, output_dir):
+        os.makedirs(output_dir, exist_ok=True)
         for episode_id, (image_dir, image_files) in tqdm(frame_paths.items(), desc="Processing episodes"):
             episode_embeddings = []
             for image_file in image_files:
@@ -61,6 +61,7 @@ class PretrainedEncoder:
                 with torch.no_grad():
                     # Get the feature map from the backbone
                     embedding, _ = self.model.backbone(image_tensor)
-                episode_embeddings.append(embedding.cpu().numpy().tolist())
-            embeddings[episode_id] = episode_embeddings
-        return embeddings
+                episode_embeddings.append(embedding.cpu())
+            
+            output_path = os.path.join(output_dir, f"{episode_id}.pt")
+            torch.save(torch.stack(episode_embeddings), output_path)

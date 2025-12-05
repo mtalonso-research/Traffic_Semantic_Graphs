@@ -55,18 +55,18 @@ def run_task(args):
 
     if args.train_encoder:
         l2d_dataset = get_graph_dataset(
-            root_dir='./data/graphical_final/L2D/',
+            root_dir=os.path.join(args.base_dataset_dir, 'L2D'),
             mode=args.mode,
             side_information_path=args.side_info_path,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.risk_scores_path
+            risk_scores_path=args.l2d_risk_scores_path
         )
         nuplan_dataset = get_graph_dataset(
-            root_dir='./data/graphical_final/nuplan_boston/', # Or other nuplan dataset
+            root_dir=os.path.join(args.base_dataset_dir, 'NuPlan'), # Or other nuplan dataset
             mode=args.mode,
             side_information_path=args.side_info_path,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.risk_scores_path
+            risk_scores_path=args.nuplan_risk_scores_path
         )
 
         l2d_quantizer = QuantileFeatureQuantizer(bins=32, node_types=l2d_dataset.get_metadata()[0])
@@ -272,11 +272,11 @@ def run_task(args):
     if args.evaluate:
         # L2D dataset
         l2d_dataset = get_graph_dataset(
-            root_dir='./data/graphical_final/L2D/',
+            root_dir=os.path.join(args.base_dataset_dir, 'L2D'),
             mode=args.mode,
             side_information_path=args.side_info_path,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.risk_scores_path
+            risk_scores_path=args.l2d_risk_scores_path
         )
 
         l2d_quantizer = QuantileFeatureQuantizer(bins=32, node_types=l2d_dataset.get_metadata()[0])
@@ -300,11 +300,11 @@ def run_task(args):
 
         # NuPlan dataset
         nuplan_dataset = get_graph_dataset(
-            root_dir='./data/graphical_final/nuplan_boston/', # Or other nuplan dataset
+            root_dir=os.path.join(args.base_dataset_dir, 'NuPlan'), # Or other nuplan dataset
             mode=args.mode,
             side_information_path=args.side_info_path,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.risk_scores_path
+            risk_scores_path=args.nuplan_risk_scores_path
         )
         nuplan_quantizer = QuantileFeatureQuantizer(bins=32, node_types=nuplan_dataset.get_metadata()[0])
         nuplan_quantizer.fit(nuplan_dataset)
@@ -398,6 +398,12 @@ if __name__ == "__main__":
         help="Dataset name (used in paths under ./data/).",
     )
     parser.add_argument(
+        "--base_dataset_dir",
+        type=str,
+        default="./data/graph_dataset/",
+        help="Base directory for graph datasets.",
+    )
+    parser.add_argument(
         "--train_encoder",
         action="store_true",
         default=False,
@@ -464,6 +470,18 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to risk scores JSON file.",
+    )
+    parser.add_argument(
+        "--l2d_risk_scores_path",
+        type=str,
+        default="./data/graph_dataset/risk_scores_L2D.json",
+        help="Path to L2D risk scores JSON file.",
+    )
+    parser.add_argument(
+        "--nuplan_risk_scores_path",
+        type=str,
+        default="./data/graph_dataset/risk_scores_NuPlan.json",
+        help="Path to NuPlan risk scores JSON file.",
     )
     parser.add_argument(
         "--node_features_to_exclude",
