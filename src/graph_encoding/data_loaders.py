@@ -38,16 +38,21 @@ class NormalizeNodeFeatures(BaseTransform):
 # Base dataset (common helpers)
 # =====================================================
 class BaseGraphJsonDataset(Dataset):
-    def __init__(self, root_dir, tags_root=None, side_information_path=None, node_features_to_exclude=None, fixed_dim=10, transform=None, pre_transform=None):
+    def __init__(self, root_dir, tags_root=None, side_information_path=None, node_features_to_exclude=None, fixed_dim=10, transform=None, pre_transform=None, risk_scores_path=None):
         super().__init__(root_dir, transform, pre_transform)
         self.root_dir = root_dir
         self.tags_root = tags_root
         self.side_information_path = side_information_path
         self.node_features_to_exclude = node_features_to_exclude
         self.fixed_dim = fixed_dim
+        self.risk_scores_path = risk_scores_path
         
         if self.side_information_path is not None:
             self.side_information = torch.load(self.side_information_path)
+
+        if self.risk_scores_path is not None:
+            with open(self.risk_scores_path, 'r') as f:
+                self.risk_scores = json.load(f)
 
         self.graph_filenames = sorted(
             [f for f in os.listdir(root_dir) if f.endswith(".json")],
@@ -178,12 +183,21 @@ class BaseGraphJsonDataset(Dataset):
         return y.unsqueeze(0)  # shape [1, D]
 
     def _load_and_attach_tags(self, data, graph_fname):
-        if self.tags_root is None:
+        if self.tags_root is None or (hasattr(self, 'risk_scores_path') and self.risk_scores_path is not None):
             return data
         tag_path = self._map_graph_to_tags(graph_fname)
         with open(tag_path, "r") as f:
             tag_dict = json.load(f)
         data.y = self._encode_tags(tag_dict)
+        return data
+
+    def _load_and_attach_risk(self, data, graph_fname):
+        if not hasattr(self, 'risk_scores_path') or self.risk_scores_path is None:
+            return data
+        
+        episode_num = graph_fname.split('_')[0]
+        risk_score = self.risk_scores.get(episode_num, 0.0) # Default to 0.0 if not found
+        data.y = torch.tensor([risk_score], dtype=torch.float).unsqueeze(0)
         return data
 
     # ---------------------------
@@ -274,6 +288,7 @@ class GraphJsonDatasetAll(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -327,6 +342,7 @@ class GraphJsonDatasetEgoVeh(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -366,6 +382,7 @@ class GraphJsonDatasetEgoOnly(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -420,6 +437,7 @@ class GraphJsonDatasetEgoEnv(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -450,6 +468,7 @@ class GraphJsonDatasetAllNoEdges(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -476,6 +495,7 @@ class GraphJsonDatasetEgoVehNoEdges(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -499,6 +519,7 @@ class GraphJsonDatasetEgoOnlyNoEdges(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -525,6 +546,7 @@ class GraphJsonDatasetEgoEnvNoEdges(BaseGraphJsonDataset):
 
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
+        data = self._load_and_attach_risk(data, fname)
         if self.side_information_path is not None:
             episode_id = fname.split('_')[0]
             if episode_id in self.side_information:
@@ -537,7 +559,7 @@ class GraphJsonDatasetEgoEnvNoEdges(BaseGraphJsonDataset):
 # =====================================================
 def get_graph_dataset(root_dir, mode="all", tags_root=None, side_information_path=None, 
                       node_features_to_exclude=None, fixed_dim=10,
-                      normalize=False, norm_method="zscore"):
+                      normalize=False, norm_method="zscore", risk_scores_path=None):
     """
     Factory function to return the right dataset loader.
 
@@ -557,21 +579,21 @@ def get_graph_dataset(root_dir, mode="all", tags_root=None, side_information_pat
         transform = NormalizeNodeFeatures(method=norm_method)
 
     if mode == "all":
-        return GraphJsonDatasetAll(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetAll(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "ego_veh":
-        return GraphJsonDatasetEgoVeh(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetEgoVeh(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "ego":
-        return GraphJsonDatasetEgoOnly(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetEgoOnly(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "ego_env":
-        return GraphJsonDatasetEgoEnv(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetEgoEnv(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "all_no_edges":
-        return GraphJsonDatasetAllNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetAllNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "ego_veh_no_edges":
-        return GraphJsonDatasetEgoVehNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetEgoVehNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "ego_no_edges":
-        return GraphJsonDatasetEgoOnlyNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetEgoOnlyNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     elif mode == "ego_env_no_edges":
-        return GraphJsonDatasetEgoEnvNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform)
+        return GraphJsonDatasetEgoEnvNoEdges(root_dir, tags_root=tags_root, side_information_path=side_information_path, node_features_to_exclude=node_features_to_exclude, fixed_dim=fixed_dim, transform=transform, risk_scores_path=risk_scores_path)
     else:
         raise ValueError(
             f"Unknown mode {mode}. Choose from: all, ego_veh, ego, ego_env, "

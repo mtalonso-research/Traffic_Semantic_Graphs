@@ -2,12 +2,20 @@ import argparse
 import os
 import torch
 from tqdm import tqdm
+import itertools
 
 from src.frame_encoding.pretrained_encoder import PretrainedEncoder
 
-def get_frame_paths(root_dir):
+def get_frame_paths(root_dir, limit=None):
     frame_paths = {}
-    for episode_dir in os.listdir(root_dir):
+    
+    # Use sorted list to ensure consistent order
+    episode_dirs = sorted(os.listdir(root_dir))
+    
+    # Apply limit if provided
+    items_to_process = itertools.islice(episode_dirs, limit) if limit is not None else episode_dirs
+
+    for episode_dir in items_to_process:
         episode_path = os.path.join(root_dir, episode_dir)
         if not os.path.isdir(episode_path):
             continue
@@ -17,17 +25,19 @@ def get_frame_paths(root_dir):
             continue
 
         images = sorted([f for f in os.listdir(image_dir) if f.endswith('.jpg')])
-        frame_paths[image_dir] = images
+        frame_paths[episode_dir] = (image_dir, images)
     return frame_paths
 
-def default_frame_encoding_processing(model_path, output_path, frames_root, run_encoding=False):
+def default_frame_encoding_processing(model_path, output_path, frames_root, run_encoding=False, limit=None):
     if not run_encoding:
         run_encoding = True
 
     if run_encoding:
         print("========== Encoding Frames ==========")
+        if limit:
+            print(f"--- Running in test mode: processing a limit of {limit} episodes ---")
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        frame_paths = get_frame_paths(frames_root)
+        frame_paths = get_frame_paths(frames_root, limit=limit)
         encoder = PretrainedEncoder(model_path)
         embeddings = encoder.encode_frames(frame_paths)
         torch.save(embeddings, output_path)
@@ -40,6 +50,7 @@ if __name__ == "__main__":
     parser.add_argument("--frames_root", type=str, default="data/raw/L2D/frames", help="Root directory of the frames.")
     parser.add_argument("--run_encoding", action="store_true", help="Run the frame encoding step.")
     parser.add_argument("--all", action="store_true", help="Run all steps (default if no flags are set).")
+    parser.add_argument("--limit", type=int, default=None, help="Limit the number of episodes to process for testing purposes.")
 
     args = parser.parse_args()
 
@@ -47,5 +58,6 @@ if __name__ == "__main__":
         args.model_path,
         args.output_path,
         args.frames_root,
-        run_encoding=args.run_encoding or args.all
+        run_encoding=args.run_encoding or args.all,
+        limit=args.limit
     )

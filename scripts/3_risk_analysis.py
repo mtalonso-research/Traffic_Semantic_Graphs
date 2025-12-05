@@ -1,7 +1,60 @@
 import argparse
 import os
 import pandas as pd
+import json
 from src.risk_analysis.risk_analysis import RiskAnalysis
+from src.utils import extract_frames
+import numpy as np
+from tqdm import tqdm
+
+def run_risk_analysis_on_all_episodes(input_directory, output_directory, output_filename):
+    """
+    Runs the risk analysis on all episodes in a given directory and saves the results to a JSON file.
+    """
+    print("========== Starting Risk Analysis on all episodes ==========")
+    risk_analyzer = RiskAnalysis()
+    
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    results = {}
+    
+    episode_files = [f for f in os.listdir(input_directory) if f.endswith('_graph.json')]
+
+    for episode_file in tqdm(episode_files):
+        episode_num = int(episode_file.split('_')[0])
+        file_path = os.path.join(input_directory, episode_file)
+        
+        with open(file_path, "r") as f:
+            graph = json.load(f)
+
+        frames = extract_frames(graph)
+        if not frames:
+            continue
+
+        risks = []
+        for i, frame in enumerate(frames):
+            try:
+                R, _, _, _ = risk_analyzer.analyze_frame(frame)
+                risks.append(R)
+            except Exception as e:
+                continue
+
+        if not risks:
+            continue
+
+        max_risk = float(np.max(risks))
+        results[episode_num] = max_risk
+
+    if not output_filename.endswith(".json"):
+        output_filename += ".json"
+    output_path = os.path.join(output_directory, output_filename)
+    with open(output_path, 'w') as f:
+        json.dump(results, f, indent=4)
+
+    print(f"Risk analysis complete. Results saved to: {output_path}")
+    print("=======================================================")
+
 
 def run_risk_analysis(input_directory, output_directory, num_episodes):
     """
@@ -88,6 +141,12 @@ def main_risk_logic(args):
             return
         run_risk_analysis(input_dir, output_dir, args.num_episodes)
     
+    elif args.run_on_all_episodes:
+        if not all([input_dir, output_dir, args.output_filename]):
+            print("Error: --run_on_all_episodes requires --output_filename and either --dataset or both --input_directory and --output_directory.")
+            return
+        run_risk_analysis_on_all_episodes(input_dir, output_dir, args.output_filename)
+
     elif args.extract_large_risk_eps:
         if not all([csv_dir, args.threshold is not None]):
             print("Error: --extract_large_risk_eps requires --threshold and either --dataset or --risk_csv_dir.")
@@ -114,6 +173,7 @@ if __name__ == "__main__":
     
     # --- Operation Flags ---
     parser.add_argument("--run_analysis", action="store_true", help="Run the full risk analysis and generate a CSV.")
+    parser.add_argument("--run_on_all_episodes", action="store_true", help="Run risk analysis on all episodes in a directory.")
     parser.add_argument("--extract_large_risk_eps", action="store_true", help="Extract episodes with risk above a threshold.")
     parser.add_argument("--extract_low_risk_eps", action="store_true", help="Extract episodes with risk below a threshold.")
     parser.add_argument("--risk_statistics", action="store_true", help="Show statistics for specified columns.")
@@ -123,7 +183,8 @@ if __name__ == "__main__":
     parser.add_argument("--input_directory", type=str, help="Override default input directory for graph JSON files.")
     parser.add_argument("--output_directory", type=str, help="Override default output directory for the CSV file.")
     parser.add_argument("--risk_csv_dir", type=str, help="Override default path to the risk_data.csv file for analysis.")
-    
+    parser.add_argument("--output_filename", type=str, help="Output filename for the JSON file (e.g., 'risk_results.json').")
+
     # --- Parameter Arguments ---
     parser.add_argument("--num_episodes", type=int, help="Number of episodes to process (for --run_analysis).")
     parser.add_argument("--threshold", type=float, help="Risk threshold for episode extraction.")

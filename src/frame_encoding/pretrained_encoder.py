@@ -52,15 +52,15 @@ class PretrainedEncoder:
 
     def encode_frames(self, frame_paths):
         embeddings = {}
-        for episode_dir, image_files in tqdm(frame_paths.items(), desc="Processing episodes"):
+        for episode_id, (image_dir, image_files) in tqdm(frame_paths.items(), desc="Processing episodes"):
             episode_embeddings = []
             for image_file in image_files:
-                image_path = os.path.join(episode_dir, image_file)
+                image_path = os.path.join(image_dir, image_file)
                 image = Image.open(image_path).convert("RGB")
                 image_tensor = self.transform(image).unsqueeze(0).to(self.device)
                 with torch.no_grad():
                     # Get the feature map from the backbone
                     embedding, _ = self.model.backbone(image_tensor)
                 episode_embeddings.append(embedding.cpu().numpy().tolist())
-            embeddings[os.path.basename(episode_dir)] = episode_embeddings
+            embeddings[episode_id] = episode_embeddings
         return embeddings

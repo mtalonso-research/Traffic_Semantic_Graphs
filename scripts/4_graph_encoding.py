@@ -58,13 +58,15 @@ def run_task(args):
             root_dir='./data/graphical_final/L2D/',
             mode=args.mode,
             side_information_path=args.side_info_path,
-            node_features_to_exclude=args.node_features_to_exclude
+            node_features_to_exclude=args.node_features_to_exclude,
+            risk_scores_path=args.risk_scores_path
         )
         nuplan_dataset = get_graph_dataset(
             root_dir='./data/graphical_final/nuplan_boston/', # Or other nuplan dataset
             mode=args.mode,
             side_information_path=args.side_info_path,
-            node_features_to_exclude=args.node_features_to_exclude
+            node_features_to_exclude=args.node_features_to_exclude,
+            risk_scores_path=args.risk_scores_path
         )
 
         l2d_quantizer = QuantileFeatureQuantizer(bins=32, node_types=l2d_dataset.get_metadata()[0])
@@ -273,8 +275,10 @@ def run_task(args):
             root_dir='./data/graphical_final/L2D/',
             mode=args.mode,
             side_information_path=args.side_info_path,
-            node_features_to_exclude=args.node_features_to_exclude
+            node_features_to_exclude=args.node_features_to_exclude,
+            risk_scores_path=args.risk_scores_path
         )
+
         l2d_quantizer = QuantileFeatureQuantizer(bins=32, node_types=l2d_dataset.get_metadata()[0])
         l2d_quantizer.fit(l2d_dataset)
 
@@ -299,7 +303,8 @@ def run_task(args):
             root_dir='./data/graphical_final/nuplan_boston/', # Or other nuplan dataset
             mode=args.mode,
             side_information_path=args.side_info_path,
-            node_features_to_exclude=args.node_features_to_exclude
+            node_features_to_exclude=args.node_features_to_exclude,
+            risk_scores_path=args.risk_scores_path
         )
         nuplan_quantizer = QuantileFeatureQuantizer(bins=32, node_types=nuplan_dataset.get_metadata()[0])
         nuplan_quantizer.fit(nuplan_dataset)
@@ -453,6 +458,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to side information file.",
+    )
+    parser.add_argument(
+        "--risk_scores_path",
+        type=str,
+        default=None,
+        help="Path to risk scores JSON file.",
     )
     parser.add_argument(
         "--node_features_to_exclude",
