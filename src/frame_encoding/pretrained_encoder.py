@@ -9,6 +9,7 @@ from tqdm import tqdm
 # Add the cloned repository to the path
 sys.path.append(os.path.abspath('lib/deeplabs'))
 
+import torch.nn as nn
 from modeling.deeplab import DeepLab
 
 class DummyArgs:
@@ -22,6 +23,7 @@ class PretrainedEncoder:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self._load_model(model_path)
         self.transform = self._get_transform()
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
     def _load_model(self, model_path):
         # Instantiate the model
@@ -61,7 +63,9 @@ class PretrainedEncoder:
                 with torch.no_grad():
                     # Get the feature map from the backbone
                     embedding, _ = self.model.backbone(image_tensor)
-                episode_embeddings.append(embedding.cpu())
+                    # Apply adaptive average pooling to reduce spatial dimensions to 1x1
+                    pooled_embedding = self.pool(embedding).squeeze() # Shape (C,)
+                episode_embeddings.append(pooled_embedding.cpu())
             
             output_path = os.path.join(output_dir, f"{episode_id}.pt")
             torch.save(torch.stack(episode_embeddings), output_path)
