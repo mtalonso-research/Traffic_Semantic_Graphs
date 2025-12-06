@@ -47,9 +47,6 @@ class BaseGraphJsonDataset(Dataset):
         self.fixed_dim = fixed_dim
         self.risk_scores_path = risk_scores_path
         
-        if self.side_information_path is not None:
-            self.side_information = torch.load(self.side_information_path)
-
         if self.risk_scores_path is not None:
             with open(self.risk_scores_path, 'r') as f:
                 self.risk_scores = json.load(f)
@@ -200,6 +197,14 @@ class BaseGraphJsonDataset(Dataset):
         data.y = torch.tensor([risk_score], dtype=torch.float).unsqueeze(0)
         return data
 
+    def _load_and_attach_side_information(self, data, graph_fname):
+        if self.side_information_path is not None:
+            episode_id = graph_fname.split('_')[0]
+            embedding_path = os.path.join(self.side_information_path, f"{episode_id}.pt")
+            if os.path.exists(embedding_path):
+                data.side_information = torch.load(embedding_path)
+        return data
+
     # ---------------------------
     # Graph helpers
     # ---------------------------
@@ -289,10 +294,7 @@ class GraphJsonDatasetAll(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -343,10 +345,7 @@ class GraphJsonDatasetEgoVeh(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -383,10 +382,7 @@ class GraphJsonDatasetEgoOnly(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -438,10 +434,7 @@ class GraphJsonDatasetEgoEnv(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -469,10 +462,7 @@ class GraphJsonDatasetAllNoEdges(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -496,10 +486,7 @@ class GraphJsonDatasetEgoVehNoEdges(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -520,10 +507,7 @@ class GraphJsonDatasetEgoOnlyNoEdges(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
@@ -547,10 +531,7 @@ class GraphJsonDatasetEgoEnvNoEdges(BaseGraphJsonDataset):
         data["window_meta"].episode_path = fname
         data = self._load_and_attach_tags(data, fname)
         data = self._load_and_attach_risk(data, fname)
-        if self.side_information_path is not None:
-            episode_id = fname.split('_')[0]
-            if episode_id in self.side_information:
-                data.side_information = self.side_information[episode_id]
+        data = self._load_and_attach_side_information(data, fname)
         return data
 
 
