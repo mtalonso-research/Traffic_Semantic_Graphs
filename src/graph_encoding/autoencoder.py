@@ -215,7 +215,7 @@ class DiscreteFeatureEncoder(nn.Module):
                 continue
             x = data[nt].x  # [N, F] Long
             
-            if x.size(0) == 0: # Add this check
+            if x.size(0) == 0: 
                 # If there are no nodes of this type in the batch, return an empty tensor
                 out[nt] = torch.empty(0, self.in_dims[nt], device=x.device)
                 continue
@@ -299,7 +299,7 @@ class HeteroGraphAutoencoder(nn.Module):
         for srctype, rel, dsttype in self.metadata[1]:
             self.edge_decoders[str((srctype, rel, dsttype))] = nn.Bilinear(embed_dim, embed_dim, 1)
 
-    def encode(self, x_dict, edge_index_dict, side_info=None):
+    def encode(self, x_dict, edge_index_dict, batch_dict=None, side_info=None):
         # Pre-project (and ReLU) per node type to hidden_dim
         x0 = {}
         for nt, pre in self.pre_lin.items():
@@ -311,7 +311,9 @@ class HeteroGraphAutoencoder(nn.Module):
         if self.side_info_dim > 0 and side_info is not None:
             side_info_proj = self.activation(self.side_info_proj(side_info))
             for nt in x0.keys():
-                x0[nt] = x0[nt] + side_info_proj
+                if nt in batch_dict:
+                    batch_vector = batch_dict[nt]
+                    x0[nt] = x0[nt] + side_info_proj[batch_vector]
 
         # Message passing 
         h = x0
@@ -361,7 +363,7 @@ class HeteroGraphAutoencoder(nn.Module):
         if hasattr(data, 'side_information'):
             side_info = data.side_information
             
-        z_dict = self.encode(x_embed, data.edge_index_dict, side_info)
+        z_dict = self.encode(x_embed, data.edge_index_dict, data.batch_dict, side_info)
         feat_logits = self.decode_features(z_dict)
         edge_logits = self.decode_edges(z_dict, data.edge_index_dict)
         return z_dict, feat_logits, edge_logits

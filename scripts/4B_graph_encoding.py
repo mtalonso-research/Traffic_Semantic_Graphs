@@ -53,6 +53,10 @@ def run_task(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
+    if "best_model.pt" in args.best_model_path:
+        side_info_str = "_with_side_info" if args.side_info_path else ""
+        args.best_model_path = f"./models/graph_encoder/4B{side_info_str}_best_model.pt"
+
     if args.train_encoder:
         l2d_dataset = get_graph_dataset(
             root_dir=os.path.join(args.base_dataset_dir, 'L2D'),
@@ -64,7 +68,7 @@ def run_task(args):
         nuplan_dataset = get_graph_dataset(
             root_dir=os.path.join(args.base_dataset_dir, 'NuPlan'), # Or other nuplan dataset
             mode=args.mode,
-            side_information_path=args.side_info_path,
+            side_information_path=None,
             node_features_to_exclude=args.node_features_to_exclude,
             risk_scores_path=args.nuplan_risk_scores_path
         )
@@ -114,6 +118,8 @@ def run_task(args):
             pin_memory=args.pin_memory,
         )
 
+        side_info_dim = l2d_dataset.side_info_dim if args.side_info_path else 0
+
         l2d_autoencoder = HeteroGraphAutoencoder(
             metadata=l2d_dataset.get_metadata(),
             hidden_dim=args.hidden_dim,
@@ -127,7 +133,7 @@ def run_task(args):
             num_decoder_layers=args.num_decoder_layers,
             activation=args.activation,
             dropout_rate=args.dropout_rate,
-            side_info_dim=args.side_info_dim if args.side_info_path else 0,
+            side_info_dim=side_info_dim,
         ).to(device)
 
         nuplan_autoencoder = HeteroGraphAutoencoder(
@@ -143,7 +149,7 @@ def run_task(args):
             num_decoder_layers=args.num_decoder_layers,
             activation=args.activation,
             dropout_rate=args.dropout_rate,
-            side_info_dim=args.side_info_dim if args.side_info_path else 0,
+            side_info_dim=side_info_dim,
         ).to(device)
         
         projection_head = ProjectionHead(in_dim=args.embed_dim, proj_dim=args.embed_dim).to(device)
@@ -295,19 +301,21 @@ def run_task(args):
             num_decoder_layers=args.num_decoder_layers,
             activation=args.activation,
             dropout_rate=args.dropout_rate,
-            side_info_dim=args.side_info_dim if args.side_info_path else 0,
+            side_info_dim=l2d_dataset.side_info_dim if args.side_info_path else 0,
         ).to(device)
 
         # NuPlan dataset
         nuplan_dataset = get_graph_dataset(
             root_dir=os.path.join(args.base_dataset_dir, 'NuPlan'), # Or other nuplan dataset
             mode=args.mode,
-            side_information_path=args.side_info_path,
+            side_information_path=None,
             node_features_to_exclude=args.node_features_to_exclude,
             risk_scores_path=args.nuplan_risk_scores_path
         )
         nuplan_quantizer = QuantileFeatureQuantizer(bins=32, node_types=nuplan_dataset.get_metadata()[0])
         nuplan_quantizer.fit(nuplan_dataset)
+
+        side_info_dim = l2d_dataset.side_info_dim if args.side_info_path else 0
 
         nuplan_autoencoder = HeteroGraphAutoencoder(
             metadata=nuplan_dataset.get_metadata(),
@@ -322,7 +330,7 @@ def run_task(args):
             num_decoder_layers=args.num_decoder_layers,
             activation=args.activation,
             dropout_rate=args.dropout_rate,
-            side_info_dim=args.side_info_dim if args.side_info_path else 0,
+            side_info_dim=side_info_dim,
         ).to(device)
 
         print(f"Loading models from {args.best_model_path}")
@@ -362,7 +370,6 @@ def run_task(args):
                 z_dict, _, _ = l2d_autoencoder(data)
                 graph_emb = batched_graph_embeddings(z_dict, data, l2d_dataset.get_metadata(), embed_dim_per_type=args.embed_dim)
                 # Get the episode IDs from the episode_path
-                print(data["window_meta"].episode_path) # Debug print
                 episode_ids = [os.path.splitext(os.path.basename(p))[0].split('_')[0] for p in data["window_meta"].episode_path]
 
                 for i, episode_id in enumerate(episode_ids):
@@ -549,7 +556,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./data/graph_embeddings/L2D",
+        default="./data/graph_embeddings/",
         help="Directory to save extracted embeddings.",
     )
     parser.add_argument(

@@ -8,6 +8,7 @@ from tqdm import tqdm
 import sys
 import wandb
 from torch.utils.data import random_split
+import json
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,12 +39,16 @@ def run_task(args):
         return
 
     dataset_name = "L2D" if args.l2d else "NuPlan"
+
+    if "best_model.pt" in args.best_model_path:
+        side_info_str = "_with_side_info" if args.with_side_information else ""
+        args.best_model_path = f"./models/risk_predictor/4A_{dataset_name}{side_info_str}_best_model.pt"
     
     root_dir = os.path.join(args.input_directory, dataset_name)
     risk_scores_path = os.path.join(args.input_directory, f"risk_scores_{dataset_name}.json")
     side_information_path = None
     if args.with_side_information and args.l2d:
-        side_information_path = os.path.join(args.input_directory, "frame_embeddings_L2D.pt")
+        side_information_path = os.path.join(args.input_directory, "L2D_frame_embs")
 
     print('Loading in Dataset ...')
     dataset = get_graph_dataset(
@@ -66,6 +71,7 @@ def run_task(args):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     print('Initializing Models ...')
+    side_info_dim = dataset.side_info_dim if args.with_side_information else 0
     encoder = HeteroGraphAutoencoder(
         metadata=dataset.get_metadata(),
         hidden_dim=args.hidden_dim,
@@ -76,7 +82,7 @@ def run_task(args):
         num_decoder_layers=1, # Not used
         activation=args.activation,
         dropout_rate=args.dropout_rate,
-        side_info_dim=128 if args.with_side_information else 0,
+        side_info_dim=side_info_dim,
     ).to(device)
     
     num_node_types = len(dataset.get_metadata()[0])
@@ -101,6 +107,8 @@ def run_task(args):
         weight_decay=args.weight_decay
     )
 
+    best_val_loss = float('inf')
+
     if args.train:
         print(f"Training risk prediction model on {dataset_name}...")
         for epoch in range(1, args.num_epochs + 1):
@@ -118,7 +126,7 @@ def run_task(args):
                 pred = prediction_head(graph_emb)
                 
                 if args.prediction_mode == "regression":
-                    target = data.y.squeeze().unsqueeze(1)
+                    target = data.y.view(-1, 1)
                 else:
                     target = risk_to_class(data.y)
                 
@@ -151,7 +159,7 @@ def run_task(args):
                     pred = prediction_head(graph_emb)
 
                     if args.prediction_mode == "regression":
-                        target = data.y.squeeze().unsqueeze(1)
+                        target = data.y.view(-1, 1)
                     else:
                         target = risk_to_class(data.y)
                     
@@ -166,19 +174,34 @@ def run_task(args):
                 })
             print(f"Val Loss: {avg_val_loss:.4f}")
 
-        # Save model
-        os.makedirs(os.path.dirname(args.best_model_path), exist_ok=True)
-        torch.save(prediction_head.state_dict(), args.best_model_path)
-        print(f"Saved best model to {args.best_model_path}")
+            # Save the best model
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                os.makedirs(os.path.dirname(args.best_model_path), exist_ok=True)
+                torch.save(prediction_head.state_dict(), args.best_model_path)
+                print(f"  -> New best model saved to {args.best_model_path}")
 
     if args.evaluate:
         print(f"Evaluating model on {dataset_name}...")
+        
+        # Load the validation data loader
+        if args.l2d:
+            val_dataset = get_graph_dataset(
+                root_dir=args.val_dir,
+                mode=args.mode,
+                side_information_path=side_information_path,
+                risk_scores_path=args.val_risk_scores_path
+            )
+            eval_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        else:
+            eval_loader = val_loader
+
         prediction_head.load_state_dict(torch.load(args.best_model_path))
         encoder.eval()
         prediction_head.eval()
         total_val_loss = 0
         with torch.no_grad():
-            for data in tqdm(val_loader, desc=f"Evaluation"):
+            for data in tqdm(eval_loader, desc=f"Evaluation"):
                 data = data.to(device)
                 data = quantizer.transform_inplace(data)
                 
@@ -188,17 +211,34 @@ def run_task(args):
                 pred = prediction_head(graph_emb)
 
                 if args.prediction_mode == "regression":
-                    target = data.y.squeeze().unsqueeze(1)
+                    target = data.y.view(-1, 1)
                 else:
                     target = risk_to_class(data.y)
                 
                 loss = loss_fn(pred, target)
                 total_val_loss += loss.item()
 
-        avg_val_loss = total_val_loss / len(val_loader)
+        avg_val_loss = total_val_loss / len(eval_loader)
         print(f"Final Validation Loss: {avg_val_loss:.4f}")
 
+        if args.save_annotations:
+            print("Saving evaluation results...")
+            results = {}
+            if os.path.exists("evaluation_results.json"):
+                with open("evaluation_results.json", 'r') as f:
+                    results = json.load(f)
+            
+            if args.l2d:
+                if args.with_side_information:
+                    results["4A"]["L2D_with_side_info"] = avg_val_loss
+                else:
+                    results["4A"]["L2D_without_side_info"] = avg_val_loss
+            elif args.nup:
+                results["4A"]["NuPlan"] = avg_val_loss
 
+            with open("evaluation_results.json", 'w') as f:
+                json.dump(results, f, indent=2)
+            print("Evaluation results saved to evaluation_results.json")
 
 
 if __name__ == "__main__":
@@ -206,6 +246,8 @@ if __name__ == "__main__":
 
     # Data args
     parser.add_argument("--input_directory", type=str, default="data/graph_dataset/", help="Input directory for graph data.")
+    parser.add_argument("--val_dir", type=str, default="data/validation_dataset/L2D/graphical_final", help="Directory for validation graphs.")
+    parser.add_argument("--val_risk_scores_path", type=str, default="data/validation_dataset/L2D/risk_outputs/risk_analysis_L2D_val.json", help="Path to validation risk scores.")
     parser.add_argument("--l2d", action="store_true", help="Process L2D dataset.")
     parser.add_argument("--nup", action="store_true", help="Process NuPlan dataset.")
     parser.add_argument("--with_side_information", action="store_true", help="Load side information for L2D dataset.")
@@ -227,6 +269,7 @@ if __name__ == "__main__":
     # Task args
     parser.add_argument("--train", action="store_true", help="Train the model.")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate the model.")
+    parser.add_argument("--save_annotations", action="store_true", help="Save evaluation losses to a file.")
     parser.add_argument("--prediction_mode", type=str, default="regression", choices=["regression", "classification"], help="Risk prediction mode.")
     parser.add_argument("--sweep", action="store_true", help="Run a wandb sweep.")
 

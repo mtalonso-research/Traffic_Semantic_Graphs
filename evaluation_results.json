@@ -1,0 +1,13 @@
+{
+  "4A": {
+    "L2D_with_side_info": 0.05439777569146827,
+    "L2D_without_side_info": 0.04786065458363737,
+    "NuPlan": 0.050690826417600844
+  },
+  "4C": {
+    "L2D_with_side_info": 0.01777748465566264,
+    "L2D_without_side_info": 0.02454430709747541,
+    "NuPlan_with_side_info_4b": 0.05015079325718861,
+    "NuPlan_without_side_info_4b": 0.04874565715277228
+  }
+}

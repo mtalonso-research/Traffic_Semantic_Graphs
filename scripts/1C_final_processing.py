@@ -15,6 +15,11 @@ def graph_post_processing(process_l2d=False,process_nuplan_boston=False,process_
         out_dir = './data/graphical_final/L2D/'
         annot_dir = "./data/annotations/L2D/"
 
+        #in_dir = './data/validation_dataset/L2D/processed_graphs'
+        #temp_dir = './data/validation_dataset/L2D/L2D_temp/'
+        #out_dir = './data/validation_dataset/L2D/graphical_final/'
+        #annot_dir = "./data/validation_dataset/L2D/annotations/L2D/"
+
         filter_episodes_by_frame_count(input_dir=in_dir, output_dir=out_dir, min_frames=min_frames)
         ego_processing_l2d(input_dir=out_dir, output_dir=out_dir)
         env_processing_l2d(input_dir=out_dir)

@@ -46,6 +46,7 @@ class BaseGraphJsonDataset(Dataset):
         self.node_features_to_exclude = node_features_to_exclude
         self.fixed_dim = fixed_dim
         self.risk_scores_path = risk_scores_path
+        self.side_info_dim = None
         
         if self.risk_scores_path is not None:
             with open(self.risk_scores_path, 'r') as f:
@@ -198,11 +199,46 @@ class BaseGraphJsonDataset(Dataset):
         return data
 
     def _load_and_attach_side_information(self, data, graph_fname):
-        if self.side_information_path is not None:
-            episode_id = graph_fname.split('_')[0]
-            embedding_path = os.path.join(self.side_information_path, f"{episode_id}.pt")
-            if os.path.exists(embedding_path):
-                data.side_information = torch.load(embedding_path)
+        if self.side_information_path is None:
+            return data
+
+        # Dynamically determine side_info_dim from the first available file
+        if self.side_info_dim is None:
+            first_found_dim = 0
+            if os.path.exists(self.side_information_path):
+                for fname in os.listdir(self.side_information_path):
+                    if fname.endswith('.pt'):
+                        try:
+                            first_tensor = torch.load(os.path.join(self.side_information_path, fname))
+                            if first_tensor.dim() > 1:
+                                first_found_dim = first_tensor.shape[1]
+                                break # Found one, we can stop
+                        except Exception:
+                            continue # Skip corrupted or invalid files
+            self.side_info_dim = first_found_dim
+
+        # If still no dimension found (e.g., empty directory), default to 0
+        if self.side_info_dim == 0:
+            return data
+
+        # Proceed with loading for the current item
+        episode_id = graph_fname.split('_')[0]
+        padded_episode_id = episode_id.zfill(6)
+        embedding_path = os.path.join(self.side_information_path, f"Episode{padded_episode_id}.pt")
+
+        if os.path.exists(embedding_path):
+            all_frame_embeddings = torch.load(embedding_path)
+            
+            # Average the embeddings across all frames
+            if all_frame_embeddings.dim() > 1 and all_frame_embeddings.shape[0] > 0:
+                episode_embedding = all_frame_embeddings.mean(dim=0, keepdim=True)
+            else:
+                episode_embedding = torch.zeros((1, self.side_info_dim), dtype=torch.float)
+            
+            data.side_information = episode_embedding
+        else:
+            data.side_information = torch.zeros((1, self.side_info_dim), dtype=torch.float)
+            
         return data
 
     # ---------------------------
