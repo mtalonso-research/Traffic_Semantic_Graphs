@@ -1,0 +1,448 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+%\usepackage{mathcomSTEv4}
+\usepackage{mathtools}
+\newcommand*{\Break}{\textbf{Break}}
+\newcommand{\na}{\mathsf{n \backslash a}}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\usepackage{array}
+\usepackage{color}
+\usepackage{bm}
+\usepackage{mathrsfs}
+\usepackage{algorithmicx}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\usepackage{epsf}
+\usepackage{xpatch}
+\usepackage{setspace} 
+\usepackage{enumitem,kantlipsum}
+\usepackage{multirow,booktabs}
+\usepackage{latexsym}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage[export]{adjustbox}
+\usepackage{dsfont}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+\title{Cross-Dataset Knowledge Transfer for \\ Traffic Scene Understanding
+%via  GNN
+%Heterogeneous Graph Neural Networks
+}
+%\title{Advanced Unsupervised Domain Adaptation for Driving Scene Graphs}
+
+\author{
+	\IEEEauthorblockN{1\IEEEauthorrefmark{1},
+    2\IEEEauthorrefmark{2}, 
+	3\IEEEauthorrefmark{3}, 
+	4\IEEEauthorrefmark{1}, \\ 
+	5\IEEEauthorrefmark{2}, and
+	6\IEEEauthorrefmark{3} }
+	\IEEEauthorblockA{\IEEEauthorrefmark{1}Florida International University, USA, \IEEEauthorrefmark{2}Indian Institute of Technology Kanpur, India, \\
+		\IEEEauthorrefmark{3}National Yang Ming Chiao Tung University, Taiwan, 
+		}
+}
+%\title{Traffic Scene Graphs as Universal Representations: Cross-Dataset Transfer Learning for Autonomous Driving}
+% \title{Conference Paper Title*\\
+% {\footnotesize \textsuperscript{*}Note: Sub-titles are not captured in Xplore and
+% should not be used}
+% \thanks{Identify applicable funding agency here. If none, delete this.}
+% }
+
+% \author{\IEEEauthorblockN{1\textsuperscript{st} Given Name Surname}
+% \IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+% \textit{name of organization (of Aff.)}\\
+% City, Country \\
+% email address or ORCID}
+% \and
+% \IEEEauthorblockN{2\textsuperscript{nd} Given Name Surname}
+% \IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+% \textit{name of organization (of Aff.)}\\
+% City, Country \\
+% email address or ORCID}
+% \and
+% \IEEEauthorblockN{3\textsuperscript{rd} Given Name Surname}
+% \IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+% \textit{name of organization (of Aff.)}\\
+% City, Country \\
+% email address or ORCID}
+% \and
+% \IEEEauthorblockN{4\textsuperscript{th} Given Name Surname}
+% \IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+% \textit{name of organization (of Aff.)}\\
+% City, Country \\
+% email address or ORCID}
+% \and
+% \IEEEauthorblockN{5\textsuperscript{th} Given Name Surname}
+% \IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+% \textit{name of organization (of Aff.)}\\
+% City, Country \\
+% email address or ORCID}
+% \and
+% \IEEEauthorblockN{6\textsuperscript{th} Given Name Surname}
+% \IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+% \textit{name of organization (of Aff.)}\\
+% City, Country \\
+% email address or ORCID}
+% }
+
+\maketitle
+
+\begin{abstract}
+Autonomous driving systems often struggle to generalize across diverse datasets due to varying sensor configurations, annotation quality, and environmental conditions.  
+We propose a novel framework that enables universal traffic scene understanding by leveraging two key ingredients: (i) a temporal graph representing the traffic scene over time — which we term \emph{Traffic Scene Graph (TSG)} — and (ii) a knowledge-transfer mechanism that projects these graph features into a common embedding space via an \emph{Unsupervised Scene Translation (UST) network}.  
+By performing inference in this common space — the \emph{Shared Graph Scene Embedding Space (SGSES)} — we can train a single network for downstream tasks that generalizes across datasets and scene types.  
+%
+To illustrate this approach, we focus on a risk-assessment task, transferring knowledge from a high-quality dataset (e.g., NuPlan) to a lower-quality dataset (e.g., Learn to Drive (L2D)).  
+Our pipeline first extracts comprehensive features — including 3D relative velocities, depth estimates, and visual embeddings — using a multi-stage process combining object detection, depth estimation, and learned image representations.  
+These features are used to build the TSG that are processed by dataset-specific encoders. A projection head trained with contrastive learning aligns the resulting embeddings in SGSES.  
+%
+On the risk-prediction task, our framework significantly improves L2D’s performance via knowledge transfer from NuPlan, yielding a substantial reduction in risk-assessment error compared to single-dataset baselines.  
+Our results demonstrate a scalable solution to leverage multiple autonomous-driving datasets, lowering annotation requirements and enhancing generalization across diverse driving environments.
+\end{abstract}
+
+
+% \begin{abstract}
+% Autonomous driving systems often struggle to generalize across diverse datasets due to varying sensor configurations, annotation quality, and environmental conditions. 
+% %
+% We propose a novel framework that enables universal traffic scene understanding by leveraging two key ingredients: (i)  a temporal graph describing the traffic scene over time-- which we term \emph{Traffic Scene Graph} (TSG)-- and (ii) a knowledge transfer mechanism which projects the graph features over a common embedding space -- the \emph{Unsupervised Scene Translation (UST) network}. 
+% %
+% Inference over this common embedding space -- the Shared Graph Scene Embedding Space (SGSES)-- allows one to train a common network for a common downstream tasks. 
+% %
+% To demonstrate the approach we consider the problem of risk assessment measures by transfer learning from a high-quality configuration to a low-quality configuration. 
+% %
+% In particular, the low quality setting considers the driving datasets—Learn to Drive (L2D) while the high quality one is the NuPlan and the common task is the risk assessment.
+% %5
+% % —into. unified graph representations, where nodes represent traffic participants and environmental conditions, while edges encode spatial-temporal relationships.
+% % %
+% % The core innovation lies in our \textbf{dual-encoder architecture with projection-based alignment}, which enables knowledge transfer from the feature-rich NuPlan dataset to enhance L2D predictions despite differences in sensor modalities and data quality. 
+% %
+% We extract comprehensive features including 3D relative velocities, depth estimates, and visual embeddings through a multi-stage pipeline combining YOLO detection, Apple Depth Pro estimation, and learned image representations. 
+% %
+% These features populate heterogeneous graphs processed by dataset-specific encoders, whose embeddings are aligned in a shared latent space through a projection head trained with contrastive learning.
+% %
+% We demonstrate our framework's effectiveness on risk prediction tasks, showing that L2D performance significantly improves through knowledge distillation from NuPlan, achieving a \% reduction in risk assessment error compared to single-dataset baselines. Our approach provides a scalable solution for leveraging multiple autonomous driving datasets, reducing annotation requirements while improving model generalization across diverse driving scenarios.
+% \end{abstract}
+
+
+%
+\begin{IEEEkeywords}
+Autonomous Driving, Graph Neural Networks, Knowledge Distillation, Multi-Modal Learning, Cross-Dataset Transfer Learning
+\end{IEEEkeywords}
+%
+
+% Include the introduction from separate file
+\input{intro.tex}
+
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{figures/project_overview.pdf}
+\caption{System architecture for cross-dataset knowledge distillation. The pipeline processes raw sensor data from NuPlan and Learn to Drive (L2D) datasets through feature extraction, constructs heterogeneous traffic scene graphs, and employs dual encoders with a shared projection head for knowledge transfer. The framework jointly optimizes feature reconstruction, link prediction, and KL divergence losses to learn universal traffic representations for downstream risk prediction.}
+\label{fig:system_architecture}
+\end{figure*}
+
+
+
+% \section{System Model}
+% \label{sec:system_model}
+
+% We consider two (or more) autonomous-driving datasets, denoted as \(\mathcal{D}_1\) and \(\mathcal{D}_2\).  
+% Each dataset \(\mathcal{D}_j\) consists of \(N_j\) episodes  
+% \[
+% \mathcal{D}_j = \{E^j_1, E^j_2, \dots, E^j_{N_j}\},
+% \]  
+% where each episode \(E^j_i\) represents a temporal recording from a vehicle, containing a sequence of sensor observations, e.i. 
+% \[
+% \mathcal{E}^j_i = \{o^j_{i,1}, o^j_{i,2}, \dots, o^j_{i,T^j_i}\}.
+% \]  
+% Each observation \(o^j_{i,t}\) may contain data from multiple sensors (e.g., camera images, LiDAR point clouds, radar returns), depending on the sensor configuration of the dataset. 
+% %
+% We assume that \(\mathcal{D}_1\) and \(\mathcal{D}_2\) may differ substantially in their sensor modalities, annotation granularity, sampling rates, and overall data quality.
+% %
+% Additionally, for each episode \(E^j_i\), we assume a (possibly noisy) scalar risk measure \(r^j_i\) is available — encoding e.g., a risk score, safety metric, or surrogate indicator. 
+% %
+% We note that the noise level or reliability of this risk measure may differ across datasets: one dataset may provide high-fidelity annotations or richer sensor data leading to more accurate risk estimation, while another dataset may contain noisier or less reliable risk labels.
+
+% Our goal is to learn a unified, data-driven latent representation space  
+% \[
+% \mathcal{Z} \subset \mathbb{R}^d,
+% \]  
+% via a dataset-specific mapping  
+% \[
+% f_j: \mathcal{E}^j_i \;\rightarrow\; \mathcal{Z},
+% \]  
+% such that observations from either dataset — regardless of their sensor modalities or quality — can be projected into \(\mathcal{Z}\).  
+
+% In this common latent space \(\mathcal{Z}\), we then train a prediction model  
+% \[
+% g: \mathcal{Z} \;\rightarrow\; \hat r,
+% \]  
+% that maps latent embeddings to risk estimates. By leveraging the cleaner (less noisy) risk labels from dataset \(\mathcal{D}_1\) during training of \(g\), and using the shared embedding \(f\) to project \(\mathcal{D}_2\) data into \(\mathcal{Z}\), we aim to improve the risk prediction accuracy on \(\mathcal{D}_2\). In other words, we perform **transfer learning from the reliable dataset \(\mathcal{D}_1\) to the noisier dataset \(\mathcal{D}_2\)**.
+
+% Formally, during training we optimize:
+
+% \[
+% \min_{f, g}\; \mathcal{L}_\text{risk}\bigl(g(f(\mathcal{O}^1_i)), r^1_i\bigr) \;+\; \lambda\, \mathcal{L}_\text{align}\bigl(f(\mathcal{O}^1), f(\mathcal{O}^2)\bigr),
+% \]
+
+% where \(\mathcal{L}_\text{risk}\) is a supervised loss on risk prediction using the high-quality dataset \(\mathcal{D}_1\), and \(\mathcal{L}_\text{align}\) is an unsupervised alignment loss (e.g., contrastive or distribution-matching) that encourages embeddings from \(\mathcal{D}_1\) and \(\mathcal{D}_2\) to share the same latent space distribution.
+
+% At test time, for episodes from \(\mathcal{D}_2\), we compute risk estimates as \(\hat r_i = g(f(\mathcal{O}^2_i))\), thereby realizing cross-dataset risk prediction despite differences in sensor setup and annotation quality.
+
+\section{System Model}
+\label{sec:system_model}
+
+We consider two (or more) autonomous-driving datasets, denoted as \(\mathcal{D}_1\) and \(\mathcal{D}_2\).  
+Each dataset \(\mathcal{D}_j\) consists of \(N_j\) episodes  
+\[
+\mathcal{D}_j = \{E^j_1, E^j_2, \dots, E^j_{N_j}\},
+\]  
+where each episode \(E^j_i\) represents a temporal recording from a vehicle, containing a sequence of sensor observations  
+\[
+\mathcal{O}^j_i = \{o^j_{i,1}, o^j_{i,2}, \dots, o^j_{i,T^j_i}\}.
+\]  
+Each observation \(o^j_{i,t}\) may contain data from multiple sensors (e.g., camera images, LiDAR point clouds, radar returns), depending on the sensor configuration of the dataset.  
+
+We assume that \(\mathcal{D}_1\) and \(\mathcal{D}_2\) may differ substantially in their sensor modalities, annotation granularity, sampling rates, and overall data quality.  
+
+For each episode \(E^j_i\), we assume a (possibly noisy) scalar risk measure \(r^j_i\) is available — encoding e.g., a risk score, safety metric, or surrogate indicator. We model the label noise as additive:  
+\[
+r^j_i = r^*_i + \varepsilon^j_i,\quad \varepsilon^j_i \sim \mathcal{N}\bigl(0, \sigma_j^2\bigr),
+\]  
+where \(r^*_i\) is the (unobserved) true underlying risk of the episode, and \(\sigma_j^2\) captures the noise level (uncertainty) of dataset \(\mathcal{D}_j\). We assume \(\sigma_1^2 < \sigma_2^2\), i.e., \(\mathcal{D}_1\) has more reliable (less noisy) risk labels than \(\mathcal{D}_2\).  
+
+Our goal is to learn a unified, data-driven latent representation space  
+\[
+\mathcal{Z} \subset \mathbb{R}^d,
+\]  
+via dataset-specific encoders  
+\[
+f_j: \mathcal{O}^j_i \;\rightarrow\; \mathcal{Z},
+\]  
+such that observations from either dataset — regardless of their sensor modalities or quality — can be projected into \(\mathcal{Z}\).  
+
+In this common latent space, we then train a shared risk predictor  
+\[
+g: \mathcal{Z} \;\rightarrow\; \hat r,
+\]  
+so that \(\hat r = g\bigl(f_j(\mathcal{O}^j_i)\bigr)\).  
+
+During training, we primarily leverage the cleaner dataset \(\mathcal{D}_1\) to learn \(g\), while using an alignment loss to bring the embeddings of \(\mathcal{D}_2\) into the same latent space as \(\mathcal{D}_1\). Formally, we optimize  
+
+\[
+\min_{f_1, f_2, g}\; \frac{1}{N_1}\sum_{i=1}^{N_1} \ell\bigl(g(f_1(\mathcal{O}^1_i)), r^1_i\bigr) \;+\; \lambda\, \mathcal{L}_\mathrm{align}\bigl(\{f_1(\mathcal{O}^1)\}, \{f_2(\mathcal{O}^2)\}\bigr),
+\]  
+
+where \(\ell\) is a supervised loss (e.g. squared error), and \(\mathcal{L}_\mathrm{align}\) is an unsupervised distribution-or contrastive-based alignment loss encouraging the two embedding distributions to match.  
+
+At test time, for episodes from \(\mathcal{D}_2\), we compute embeddings via \(f_2\) and risk predictions \(\hat r_i = g(f_2(\mathcal{O}^2_i))\), obtaining risk estimates for the noisier dataset without having used its noisy labels for training the predictor.  
+
+\section{Proposed Approach}
+
+
+\vspace{5cm}
+% Consider two autonomous driving datasets $\mathcal{D}_1$ (NuPlan) and $\mathcal{D}_2$ (L2D), each comprising $N$ episodes $\mathcal{E} = \{e_1, e_2, ..., e_n\}$ where each episode $e_i$ contains a sequence of $T$ temporal observations $\mathcal{O}_i = \{o_1^i, o_2^i, ..., o_T^i\}$. 
+% %
+% The datasets exhibit fundamental differences in sensor modalities, annotation granularity, and data quality. 
+% %
+
+
+% Our objective is to learn a unified representation function $f: \mathcal{O} \rightarrow \mathcal{Z}$ that maps observations from either dataset to a shared latent space $\mathcal{Z} \in \mathbb{R}^d$, enabling knowledge transfer from the annotation-rich dataset $\mathcal{D}_1$ to enhance predictions on $\mathcal{D}_2$.
+
+
+
+
+% \vspace{3cm}
+\subsection{Multi-Modal Feature Extraction Pipeline}
+
+\subsubsection{Temporal Sampling Strategy}
+
+Given the computational and storage constraints inherent in processing high-frequency sensor data, we implement a strategic temporal sampling approach. For an episode with duration $T_{episode}$, we extract observations at intervals $\Delta t = 3$ seconds, yielding a sequence:
+\begin{equation}
+\mathcal{O}_{sampled} = \{o_t : t \in \{0, \Delta t, 2\Delta t, ..., \lfloor T_{episode}/\Delta t \rfloor \cdot \Delta t\}\}
+\end{equation}
+
+This sampling rate balances temporal resolution with computational tractability, though it introduces challenges in maintaining object persistence across frames, particularly for dynamic entities with high relative velocities.
+
+\subsubsection{Environmental Context Enrichment}
+
+We augment native dataset annotations with external data sources to establish comparable environmental representations across datasets.
+
+For the NuPlan dataset, we perform coordinate system transformations from local East-North-Up (ENU) frames to global WGS84 coordinates. Given a regional origin $(lat_0, lon_0, alt_0)$, we apply the transformation:
+\begin{equation}
+[lon, lat, alt]^T = \Pi_{ENU \rightarrow WGS84}([x, y, z]^T; lat_0, lon_0)
+\end{equation}
+where $\Pi$ represents the projection transformation using the transverse Mercator projection centered at the regional origin.
+
+Subsequently, we query the Open-Meteo Archive API to obtain hourly weather data, matching timestamps with microsecond precision. The weather feature vector encompasses:
+\begin{equation}
+\mathbf{w}_{weather} = \{\rho_{precip}, \omega_{code}, \delta_{daylight}\}
+\end{equation}
+where $\rho_{precip}$ denotes precipitation in millimeters, $\omega_{code}$ represents WMO weather codes, and $\delta_{daylight}$ is a binary daylight indicator.
+
+For the L2D dataset, which lacks comprehensive map annotations, we leverage the OpenStreetMap Overpass API to extract traffic infrastructure within a 30-meter radius of each observation:
+\begin{equation}
+\mathcal{M}_{OSM} = \text{Query}_{Overpass}(lat \pm \epsilon, lon \pm \epsilon), \quad \epsilon = 30m
+\end{equation}
+
+The extracted features include traffic controls $\mathcal{C} = \{$stop\_sign, traffic\_signal, yield\_sign$\}$, road attributes $\mathcal{R} = \{$lanes, maxspeed, surface\_type$\}$, and traffic features $\mathcal{F} = \{$pedestrian\_crossing, bus\_stop$\}$.
+
+\subsubsection{3D Velocity Estimation from Monocular Vision}
+
+For the L2D dataset, which provides only RGB imagery, we implement a multi-stage computer vision pipeline to reconstruct 3D motion dynamics. Given consecutive frames $I^t$ and $I^{t+\Delta t}$, we compute:
+
+1. **Object Detection**: Apply YOLO-based detection to identify traffic participants:
+   \begin{equation}
+   \mathcal{B}^t = \text{YOLO}(I^t) = \{b_i^t = (u_i, v_i, w_i, h_i, c_i)\}_{i=1}^{N}
+   \end{equation}
+   where $(u_i, v_i)$ denotes bounding box center, $(w_i, h_i)$ represents dimensions, and $c_i$ is the class confidence.
+
+2. **Depth Estimation**: Employ Apple Depth Pro for monocular depth prediction:
+   \begin{equation}
+   D^t = \Phi_{depth}(I^t): \mathbb{R}^{H \times W \times 3} \rightarrow \mathbb{R}^{H \times W}
+   \end{equation}
+
+3. **Relative Velocity Computation**: Calculate 3D velocities using temporal depth variations and pixel displacements:
+   \begin{equation}
+   v_z^{rel} = \frac{1}{\Delta t}[D^{t+\Delta t}(u_i, v_i) - D^t(u_i, v_i)]
+   \end{equation}
+   \begin{equation}
+   [v_x^{rel}, v_y^{rel}]^T = \frac{\bar{D}^t}{\Delta t \cdot f} \mathbf{K}^{-1} [\Delta u_i, \Delta v_i, 1]^T
+   \end{equation}
+   where $\mathbf{K}$ represents the camera intrinsic matrix, $f$ denotes focal length, and $\bar{D}^t$ is the mean depth within the bounding box.
+
+\subsection{Semantic Scene Understanding}
+
+\subsubsection{Behavioral Classification}
+
+We implement a hierarchical classification scheme for ego vehicle maneuvers based on steering angle integration and turn signal states. The cumulative steering angle over a temporal window is computed as:
+\begin{equation}
+\Phi_{cum} = \sum_{t=t_0}^{t_0+w} \phi_t \cdot \Delta t
+\end{equation}
+
+The behavioral classification follows:
+\begin{equation}
+\mathcal{B}_{ego} = \begin{cases}
+    \text{lane\_change} & \text{if } |\Phi_{cum}| \in [3°, 30°] \wedge \tau \neq 0 \\
+    \text{turning} & \text{if } |\Phi_{cum}| \in (30°, 135°] \\
+    \text{u-turn} & \text{if } |\Phi_{cum}| > 135° \\
+    \text{straight} & \text{otherwise}
+\end{cases}
+\end{equation}
+where $\tau \in \{0, 1, 2\}$ represents the turn signal state (none, left, right).
+
+\subsubsection{Hierarchical Semantic Tagging}
+
+We assign multi-dimensional semantic tags to characterize each driving episode across four primary categories:
+
+1. **Action Tags** $\mathcal{T}_{action}$: Dominant maneuver classification with priority ordering for complex behaviors (roundabout $>$ parking $>$ turning $>$ straight)
+
+2. **Traffic Control Tags** $\mathcal{T}_{control}$: Regulatory elements with hierarchical precedence (signal $>$ stop $>$ yield $>$ unmarked)
+
+3. **Road Feature Tags** $\mathcal{T}_{road}$: Binary indicators for infrastructure characteristics including speed zones, road types, and special structures
+
+4. **Environmental Tags** $\mathcal{T}_{env}$: Temporal and visibility conditions including rush hour detection (07:00-09:00, 16:00-18:00 on weekdays) and seasonal indicators
+
+\subsection{Heterogeneous Graph Representation}
+
+We model each traffic scene as a heterogeneous directed graph $\mathcal{G}^t = (\mathcal{V}^t, \mathcal{E}^t, \mathcal{X}^t, \mathcal{R})$ where $\mathcal{V}^t$ represents typed nodes, $\mathcal{E}^t$ denotes edges, $\mathcal{X}^t$ contains feature matrices, and $\mathcal{R}$ defines relation types.
+
+\subsubsection{Node Architecture}
+
+The node set comprises four distinct types:
+\begin{equation}
+\mathcal{V}^t = \mathcal{V}_{ego}^t \cup \mathcal{V}_{vehicle}^t \cup \mathcal{V}_{pedestrian}^t \cup \mathcal{V}_{environment}^t
+\end{equation}
+
+Each node type maintains a specific feature schema:
+- **Ego node**: $\mathbf{x}_{ego} \in \mathbb{R}^{d_{ego}}$ encoding position, velocity, acceleration, heading, and visual embeddings
+- **Vehicle nodes**: $\mathbf{x}_{veh} \in \mathbb{R}^{d_{veh}}$ containing relative position, velocity, and distance metrics
+- **Pedestrian nodes**: $\mathbf{x}_{ped} \in \mathbb{R}^{d_{ped}}$ with motion and proximity features
+- **Environment node**: $\mathbf{x}_{env} \in \mathbb{R}^{d_{env}}$ aggregating weather, temporal, and infrastructure context
+
+\subsubsection{Edge Construction Strategy}
+
+We establish typed edges based on spatial-temporal relationships:
+\begin{equation}
+\mathcal{E}^t = \bigcup_{r \in \mathcal{R}} \mathcal{E}_r^t
+\end{equation}
+
+where relation types include:
+- **Proximity relations**: Connect entities when $d_{ij} < \theta_{dist}$ or $\text{TTC}_{ij} < \theta_{time}$
+- **Context relations**: Link all nodes to the environment node for global context propagation
+- **Temporal relations**: Connect same entities across consecutive frames for motion consistency
+
+\subsection{Knowledge Distillation Architecture}
+
+\subsubsection{Dataset-Specific Encoders}
+
+We employ separate Graph Neural Network encoders tailored to each dataset's characteristics. For dataset $d \in \{$NuPlan, L2D$\}$, the encoder performs:
+\begin{equation}
+\mathbf{H}_d^{(l+1)} = \text{HeteroGNN}(\mathbf{H}_d^{(l)}, \mathcal{G}_d^t; \Theta_d^{(l)})
+\end{equation}
+
+Each layer aggregates information through typed message passing:
+\begin{equation}
+\mathbf{h}_{v}^{(l+1)} = \sigma\left(\mathbf{W}_{self}^{(l)} \mathbf{h}_{v}^{(l)} + \sum_{r \in \mathcal{R}} \sum_{u \in \mathcal{N}_r(v)} \alpha_{r,uv} \mathbf{W}_r^{(l)} \mathbf{h}_u^{(l)}\right)
+\end{equation}
+where $\alpha_{r,uv}$ represents attention weights computed via:
+\begin{equation}
+\alpha_{r,uv} = \frac{\exp(\text{LeakyReLU}(\mathbf{a}_r^T[\mathbf{W}_r \mathbf{h}_u || \mathbf{W}_r \mathbf{h}_v]))}{\sum_{u' \in \mathcal{N}_r(v)} \exp(\text{LeakyReLU}(\mathbf{a}_r^T[\mathbf{W}_r \mathbf{h}_{u'} || \mathbf{W}_r \mathbf{h}_v]))}
+\end{equation}
+
+\subsubsection{Projection and Alignment}
+
+A shared projection head maps dataset-specific embeddings to a unified latent space:
+\begin{equation}
+\mathbf{z}_d = \psi(\text{READOUT}(\mathbf{H}_d^{(L)}); \Omega)
+\end{equation}
+where $\psi$ is a multi-layer perceptron with shared parameters $\Omega$, and READOUT performs hierarchical pooling across node types.
+
+\subsection{Multi-Objective Optimization}
+
+The training objective combines reconstruction, structural preservation, and distributional alignment:
+
+\begin{equation}
+\mathcal{L} = \sum_{d \in \{1,2\}} \lambda_{recon}^d \mathcal{L}_{recon}^d + \lambda_{link}^d \mathcal{L}_{link}^d + \lambda_{align} \mathcal{L}_{align} + \lambda_{task} \mathcal{L}_{task}
+\end{equation}
+
+where:
+- $\mathcal{L}_{recon}^d$: Feature reconstruction via graph decoders
+- $\mathcal{L}_{link}^d$: Link prediction for structural preservation
+- $\mathcal{L}_{align}$: KL divergence between projected distributions
+- $\mathcal{L}_{task}$: Downstream risk prediction loss
+
+The framework employs curriculum learning, initially emphasizing reconstruction objectives before gradually increasing the weight of alignment and task-specific losses as training progresses.
+
+
+\section{Methodology}
+\label{sec:methodology}
+\section{Experimental Setup}
+\label{sec:experiments}
+\section{Results}
+\label{sec:results}
+\section{Analysis and Discussion}
+\label{sec:analysis}
+\section{Conclusion}
+\label{sec:conclusion}
+
+
+% References should be produced using the bibtex program from suitable
+% BiBTeX files (here: strings, refs, manuals). The IEEEbib.bst bibliography
+% style file from IEEE produces unsorted bibliography list.
+% -------------------------------------------------------------------------
+\bibliographystyle{IEEEtran}
+\bibliography{IEEEabrv,KLASS.bib}
+
+\end{document}

@@ -9,6 +9,7 @@ import sys
 import wandb
 from torch.utils.data import random_split
 import json
+import random
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,8 +31,14 @@ def risk_to_class(risk_scores):
 
 def run_task(args):
 
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     if args.sweep:
-        wandb.init(config=args)
+        wandb.init(config=vars(args))
         args = wandb.config
     
     if not args.l2d and not args.nup:
@@ -42,7 +49,7 @@ def run_task(args):
 
     if "best_model.pt" in args.best_model_path:
         side_info_str = "_with_side_info" if args.with_side_information else ""
-        args.best_model_path = f"./models/risk_predictor/4A_{dataset_name}{side_info_str}_best_model.pt"
+        best_model_path = f"./models/risk_predictor/4A_{dataset_name}{side_info_str}_best_model.pt"
     
     root_dir = os.path.join(args.input_directory, dataset_name)
     risk_scores_path = os.path.join(args.input_directory, f"risk_scores_{dataset_name}.json")
@@ -177,9 +184,17 @@ def run_task(args):
             # Save the best model
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                os.makedirs(os.path.dirname(args.best_model_path), exist_ok=True)
-                torch.save(prediction_head.state_dict(), args.best_model_path)
-                print(f"  -> New best model saved to {args.best_model_path}")
+                os.makedirs(os.path.dirname(best_model_path), exist_ok=True)
+                checkpoint = {
+                    "encoder_state_dict": encoder.state_dict(),
+                    "prediction_head_state_dict": prediction_head.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_val_loss": best_val_loss,
+                    # optional but handy:
+                    "args": dict(vars(args)),  # in case you ever want to inspect hyperparams
+                }
+                torch.save(checkpoint, best_model_path)
+                print(f"  -> New best model saved to {best_model_path}")
 
     if args.evaluate:
         print(f"Evaluating model on {dataset_name}...")
@@ -196,9 +211,13 @@ def run_task(args):
         else:
             eval_loader = val_loader
 
-        prediction_head.load_state_dict(torch.load(args.best_model_path))
+        checkpoint = torch.load(best_model_path, map_location=device)
+        encoder.load_state_dict(checkpoint["encoder_state_dict"])
+        prediction_head.load_state_dict(checkpoint["prediction_head_state_dict"])
+
         encoder.eval()
         prediction_head.eval()
+
         total_val_loss = 0
         with torch.no_grad():
             for data in tqdm(eval_loader, desc=f"Evaluation"):

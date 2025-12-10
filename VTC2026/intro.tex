@@ -1,0 +1,34 @@
+\section{Introduction}
+\label{sec:intro}
+
+\textcolor{blue}{The development of robust autonomous driving systems is fundamentally constrained by the diversity of sensor configurations and data formats across different vehicle platforms and datasets. Perception models trained on one dataset, such as the high-resolution LiDAR and camera data from nuPlan \cite{nuplan_2021}, often fail to generalize to platforms with different sensor suites, like the monocular camera-only data in the Learn to Drive (L2D) dataset \cite{l2d_2020}. This lack of interoperability creates significant barriers to progress: (i) it prevents the development of universal safety validation standards, hindering regulatory approval; (ii) it leads to fragmented, costly engineering efforts, as models must be re-designed for each new platform; and (iii) it obstructs the realization of cooperative perception in connected and autonomous vehicle (CAV) ecosystems, where shared understanding is paramount.}
+
+To address these challenges, we propose \emph{Unsupervised Scene Translation (UST)}, a framework that maps heterogeneous scene data into a shared latent space regardless of sensor configuration or dataset origin. We introduce: (i) \emph{Traffic Scene Graphs (TSG)}—temporal graph representations capturing dynamic entities and spatio-temporal relationships, and (ii) \emph{Shared Graph Scene Embedding Space (SGSES)}—a common embedding space enabling cross-platform reasoning. We demonstrate this approach using nuPlan (high-quality) and Learn to Drive (L2D, lower-quality) datasets, evaluating on safety assessment via Time-to-Collision (TTC), Post-Encroachment Time (PET), and Deceleration Rate to Avoid Collision (DRAC) metrics.
+
+\subsection*{Literature Review}
+\noindent
+\textbf{Knowledge Graphs in Traffic:} Knowledge graphs enhance traffic prediction through spatial-temporal modeling. KST-GCN and STKG-STTN architectures effectively capture correlations between external factors and spatio-temporal dependencies \cite{Zhu2020KST-GCN,Zhao2024STKG-STTN}. Visual and multimodal traffic knowledge graphs integrate heterogeneous data sources into unified representations \cite{Guo2023Visual,Tan2021Research}, advancing scene understanding capabilities.
+
+\noindent
+\textbf{Language Models for Semantics:} Large Language Models provide semantic insights from multimodal sensor data \cite{Zhang2024TransportationGames,Jain2024Semantic}. LLMs streamline ITS operations, handle multimodal traffic data, and address real-world transportation challenges \cite{Zheng2023ChatGPT,Wandelt2024Large,Zhou2023Vision}, bridging raw data and actionable intelligence.
+
+\noindent
+\textbf{Multi-Sensor Fusion:} Integrating cameras, LiDAR, and radar enhances prediction robustness. EZFusion improves 3D detection by combining complementary sensor strengths \cite{Wandelt2024Large}. CR3DT utilizes radar velocity and camera spatial data for enhanced tracking \cite{Baumann2024CR3DT}. Camera-LiDAR fusion frameworks show improvements under challenging conditions \cite{Sochaniwsky2024A}, while SparseFusion3D addresses radar sparsity \cite{Yu2024SparseFusion3D}.
+
+\noindent
+\textbf{Interpretability:} Knowledge graphs provide transparent reasoning frameworks \cite{Rajabi2022Knowledge-graph-based}. LLMs offer semantic context that, combined with knowledge graphs, improves reasoning and explainability \cite{Pan2023Unifying,Kau2024Combining}. Ontological reasoning with LLMs enhances traceability \cite{Baldazzi2024Explaining}, crucial for regulatory compliance.
+
+\noindent
+\textbf{Research Gaps:} Existing approaches lack cross-domain transfer mechanisms. Knowledge graphs focus on single datasets, LLMs remain underexplored for universal traffic representations, and fusion techniques struggle with generalization across sensor suites. A unified framework for learning universal traffic scene representations across diverse datasets is absent.
+
+\subsection*{Contributions}
+\begin{itemize}[leftmargin=*]
+	\item \textcolor{blue}{\textbf{Universal Traffic Scene Graph (TSG) Representation:} We propose a novel temporal semantic graph structure that serves as a universal, sensor-agnostic representation for traffic scenes. This abstraction layer enables consistent interpretation of data from vastly different sources.}
+	\item \textcolor{blue}{\textbf{Unsupervised Scene Translation (UST):} We introduce a novel unsupervised alignment mechanism that maps heterogeneous TSGs into a Shared Graph Scene Embedding Space (SGSES). This enables knowledge transfer between datasets without requiring paired data, a significant advantage in real-world applications.}
+	\item \textcolor{blue}{\textbf{End-to-End Multi-Modal Feature Extraction:} We present a comprehensive pipeline for constructing robust scene graphs. This pipeline integrates object detection, monocular depth estimation, 3D velocity computation from 2D data, and learned visual embeddings, overcoming the limitations of datasets with sparse annotations.}
+	\item \textcolor{blue}{\textbf{Heterogeneous Graph Neural Network (GNN) Architecture:} We design a specialized heterogeneous GNN that learns consistent cross-dataset embeddings while preserving the unique, task-specific information inherent in each dataset. This is achieved through a dual-encoder architecture with a shared projection head.}
+	\item \textcolor{blue}{\textbf{Empirical Validation and Scalability:} We demonstrate the effectiveness of our framework through extensive experiments on a risk assessment task. By transferring knowledge from the nuPlan to the L2D dataset, we show a significant reduction in risk assessment error, highlighting the potential for our approach to enhance safety and reduce the need for dataset-specific engineering.}
+\end{itemize}
+
+\subsection*{Reproducibility}
+Our implementation is publicly available at: \url{https://github.com/mtalonso-research/Traffic_Semantic_Graphs}.
