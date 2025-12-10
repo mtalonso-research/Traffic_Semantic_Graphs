@@ -2,6 +2,72 @@
 
 <img src="figures/project_overview.png" alt="project overview">
 
+## ⚙️ Setup
+
+### 1. Clone the Main Repository
+
+First, clone this main repository to your local machine:
+
+```bash
+git clone https://github.com/your-username/your-repository.git
+cd your-repository
+```
+
+### 2. Clone External Dependencies
+
+This project depends on three external Git repositories that must be cloned into specific local directories. These directories are intentionally ignored by the main project's Git repository (via `.gitignore`) to keep the repository lightweight.
+
+Clone each of the following repositories:
+
+```bash
+# Clone nuplan-devkit
+git clone https://github.com/motional/nuplan-devkit.git nuplan-devkit
+
+# Clone ml-depth-pro
+git clone https://github.com/apple/ml-depth-pro.git ml-depth-pro
+
+# Clone deeplabs
+git clone https://github.com/sunggukcha/deeplabs.git lib/deeplabs
+```
+
+### 3. Create Conda Environments
+
+This project utilizes two separate Conda environments: `nuplan` and `sem_graphs`. The environment definitions are provided in the `nuplan_env.yml` and `sem_graphs_env.yml` files.
+
+Ensure you have Conda installed and initialized in your shell (`conda init`, then restart your terminal if needed).
+
+#### `nuplan` Environment
+
+The `nuplan` environment is specifically used for running the NuPlan data processing script (`1B_nup_processing.py`).
+
+1.  **Create the environment:**
+    ```bash
+    conda env create -f nuplan_env.yml
+    ```
+2.  **Activate the environment:**
+    ```bash
+    conda activate nuplan
+    ```
+3.  **Install Hardware-Specific Packages:**
+    After activating the environment, install PyTorch and its related packages. Please visit the [Official PyTorch Website](https://pytorch.org/get-started/locally/) to find the correct installation command for your specific system (OS, package manager, CUDA version). You will need to install `torch`, `pytorch-lightning`, and `torchmetrics`.
+
+#### `sem_graphs` Environment
+
+The `sem_graphs` environment is used for all other scripts in the pipeline.
+
+1.  **Create the environment:**
+    ```bash
+    conda env create -f sem_graphs_env.yml
+    ```
+2.  **Activate the environment:**
+    ```bash
+    conda activate sem_graphs
+    ```
+3.  **Install Hardware-Specific Packages:**
+    After activating the environment, install PyTorch, PyG (PyTorch Geometric), and related packages.
+    *   First, visit the [Official PyTorch Website](https://pytorch.org/get-started/locally/) to find the correct installation command for `torch`, `torchvision`, and `torchaudio` for your system.
+    *   Then, visit the [PyG documentation](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) for instructions on how to install `pyg` correctly for your new PyTorch version.
+
 ## 📁 Directory Overview
 
 ```plaintext
