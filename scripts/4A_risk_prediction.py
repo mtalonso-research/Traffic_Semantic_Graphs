@@ -10,6 +10,7 @@ import wandb
 from torch.utils.data import random_split
 import json
 import random
+import yaml
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,6 +38,14 @@ def run_task(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
+    if args.load_config is not None:
+        with open(args.load_config, "r") as f:
+            cfg = yaml.safe_load(f)
+
+        # Override argparse values with config ones
+        for k, v in cfg.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
     if args.sweep:
         wandb.init(config=vars(args))
         args = wandb.config
@@ -211,7 +220,7 @@ def run_task(args):
         else:
             eval_loader = val_loader
 
-        checkpoint = torch.load(best_model_path, map_location=device)
+        checkpoint = torch.load(best_model_path, map_location=device, weights_only=False)
         encoder.load_state_dict(checkpoint["encoder_state_dict"])
         prediction_head.load_state_dict(checkpoint["prediction_head_state_dict"])
 
@@ -295,6 +304,13 @@ if __name__ == "__main__":
     # Paths, seed, outputs
     parser.add_argument("--best_model_path", type=str, default="./models/risk_predictor/best_model.pt", help="Path to save/load the best model checkpoint.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+
+    parser.add_argument(
+        "--load_config",
+        type=str,
+        default=None,
+        help="Path to a YAML config file with default arguments.",
+    )
 
     args = parser.parse_args()
     run_task(args)
