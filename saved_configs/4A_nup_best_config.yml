@@ -1,0 +1,25 @@
+lr: 2.6654538820199612e-05
+l2d: false
+nup: true
+mode: "all"
+seed: 42
+
+embed_dim: 224
+activation: "relu"
+batch_size: 8
+hidden_dim: 224
+num_epochs: 10
+num_workers: 4
+dropout_rate: 0.32712518723017703
+val_fraction: 0.2
+weight_decay: 1.607720454042977e-05
+
+best_model_path: "./models/risk_predictor/best_model.pt"
+input_directory: "data/graph_dataset/"
+val_dir: "data/validation_dataset/L2D/graphical_final"
+val_risk_scores_path: "data/validation_dataset/L2D/risk_outputs/risk_analysis_L2D_val.json"
+
+prediction_mode: "regression"
+with_side_information: false
+save_annotations: false
+num_encoder_layers: 1

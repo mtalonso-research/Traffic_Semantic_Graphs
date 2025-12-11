@@ -7,8 +7,8 @@ import os
 import numpy as np
 from tqdm import tqdm
 import sys
-import wandb  
-import yaml 
+import wandb
+import yaml
 from torch.utils.data import ConcatDataset
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,7 +20,8 @@ from src.graph_encoding.autoencoder import (
     edge_loss,
     QuantileFeatureQuantizer,
     ProjectionHead,
-    kl_divergence_between_gaussians
+    kl_divergence_between_gaussians,
+    batched_graph_embeddings,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,20 +58,21 @@ def run_task(args):
         side_info_str = "_with_side_info" if args.side_info_path else ""
         args.best_model_path = f"./models/graph_encoder/4B{side_info_str}_best_model.pt"
 
+    # ----------------- TRAINING -----------------
     if args.train_encoder:
         l2d_dataset = get_graph_dataset(
-            root_dir=os.path.join(args.base_dataset_dir, 'L2D'),
+            root_dir=os.path.join(args.base_dataset_dir, "L2D"),
             mode=args.mode,
             side_information_path=args.side_info_path,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.l2d_risk_scores_path
+            risk_scores_path=args.l2d_risk_scores_path,
         )
         nuplan_dataset = get_graph_dataset(
-            root_dir=os.path.join(args.base_dataset_dir, 'NuPlan'), # Or other nuplan dataset
+            root_dir=os.path.join(args.base_dataset_dir, "NuPlan"),  # Or other nuplan dataset
             mode=args.mode,
             side_information_path=None,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.nuplan_risk_scores_path
+            risk_scores_path=args.nuplan_risk_scores_path,
         )
 
         l2d_quantizer = QuantileFeatureQuantizer(bins=32, node_types=l2d_dataset.get_metadata()[0])
@@ -82,11 +84,15 @@ def run_task(args):
         # Split datasets into training and validation
         l2d_train_size = int((1 - args.val_fraction) * len(l2d_dataset))
         l2d_val_size = len(l2d_dataset) - l2d_train_size
-        l2d_train_dataset, l2d_val_dataset = torch.utils.data.random_split(l2d_dataset, [l2d_train_size, l2d_val_size])
+        l2d_train_dataset, l2d_val_dataset = torch.utils.data.random_split(
+            l2d_dataset, [l2d_train_size, l2d_val_size]
+        )
 
         nuplan_train_size = int((1 - args.val_fraction) * len(nuplan_dataset))
         nuplan_val_size = len(nuplan_dataset) - nuplan_train_size
-        nuplan_train_dataset, nuplan_val_dataset = torch.utils.data.random_split(nuplan_dataset, [nuplan_train_size, nuplan_val_size])
+        nuplan_train_dataset, nuplan_val_dataset = torch.utils.data.random_split(
+            nuplan_dataset, [nuplan_train_size, nuplan_val_size]
+        )
 
         l2d_train_loader = DataLoader(
             l2d_train_dataset,
@@ -151,11 +157,13 @@ def run_task(args):
             dropout_rate=args.dropout_rate,
             side_info_dim=side_info_dim,
         ).to(device)
-        
+
         projection_head = ProjectionHead(in_dim=args.embed_dim, proj_dim=args.embed_dim).to(device)
 
         optimizer = torch.optim.Adam(
-            list(l2d_autoencoder.parameters()) + list(nuplan_autoencoder.parameters()) + list(projection_head.parameters()),
+            list(l2d_autoencoder.parameters())
+            + list(nuplan_autoencoder.parameters())
+            + list(projection_head.parameters()),
             lr=args.lr,
             weight_decay=args.weight_decay,
         )
@@ -163,14 +171,14 @@ def run_task(args):
         best_val_loss = float("inf")
 
         for epoch in range(1, args.num_epochs + 1):
-            print(f'Running Epoch {epoch} ...')
+            print(f"Running Epoch {epoch} ...")
 
             l2d_autoencoder.train()
             nuplan_autoencoder.train()
             projection_head.train()
-            
+
             total_train_loss = 0
-            
+
             # This assumes the datasets are of same length, which might not be true
             # A better implementation would be to use iterators
             train_loader = zip(l2d_train_loader, nuplan_train_loader)
@@ -183,39 +191,43 @@ def run_task(args):
 
                 # L2D forward pass
                 l2d_z_dict, l2d_feat_logits, l2d_edge_logits = l2d_autoencoder(l2d_data)
-                l2d_recon_loss = feature_loss(l2d_feat_logits, l2d_data) + edge_loss(l2d_edge_logits, l2d_z_dict, l2d_autoencoder.edge_decoders)
+                l2d_recon_loss = feature_loss(l2d_feat_logits, l2d_data) + edge_loss(
+                    l2d_edge_logits, l2d_z_dict, l2d_autoencoder.edge_decoders
+                )
 
                 # NuPlan forward pass
                 nuplan_z_dict, nuplan_feat_logits, nuplan_edge_logits = nuplan_autoencoder(nuplan_data)
-                nuplan_recon_loss = feature_loss(nuplan_feat_logits, nuplan_data) + edge_loss(nuplan_edge_logits, nuplan_z_dict, nuplan_autoencoder.edge_decoders)
+                nuplan_recon_loss = feature_loss(nuplan_feat_logits, nuplan_data) + edge_loss(
+                    nuplan_edge_logits, nuplan_z_dict, nuplan_autoencoder.edge_decoders
+                )
 
                 # Projection and KL divergence
-                l2d_ego_z = l2d_z_dict['ego']
-                nuplan_ego_z = nuplan_z_dict['ego']
-                
+                l2d_ego_z = l2d_z_dict["ego"]
+                nuplan_ego_z = nuplan_z_dict["ego"]
+
                 l2d_proj_z = projection_head(l2d_ego_z)
                 nuplan_proj_z = projection_head(nuplan_ego_z)
-                
+
                 kl_loss = kl_divergence_between_gaussians(l2d_proj_z, nuplan_proj_z)
 
                 loss = l2d_recon_loss + nuplan_recon_loss + args.kl_weight * kl_loss
-                
+
                 loss.backward()
                 optimizer.step()
                 total_train_loss += loss.item()
-            
+
             avg_train_loss = total_train_loss / len(l2d_train_loader)
 
             # Validation loop
             l2d_autoencoder.eval()
             nuplan_autoencoder.eval()
             projection_head.eval()
-            
+
             total_val_loss = 0
             total_kl_div = 0
             total_l2d_recon_loss = 0
             total_nuplan_recon_loss = 0
-            
+
             val_loader = zip(l2d_val_loader, nuplan_val_loader)
 
             with torch.no_grad():
@@ -225,23 +237,27 @@ def run_task(args):
 
                     # L2D forward pass
                     l2d_z_dict, l2d_feat_logits, l2d_edge_logits = l2d_autoencoder(l2d_data)
-                    l2d_recon_loss = feature_loss(l2d_feat_logits, l2d_data) + edge_loss(l2d_edge_logits, l2d_z_dict, l2d_autoencoder.edge_decoders)
+                    l2d_recon_loss = feature_loss(l2d_feat_logits, l2d_data) + edge_loss(
+                        l2d_edge_logits, l2d_z_dict, l2d_autoencoder.edge_decoders
+                    )
 
                     # NuPlan forward pass
                     nuplan_z_dict, nuplan_feat_logits, nuplan_edge_logits = nuplan_autoencoder(nuplan_data)
-                    nuplan_recon_loss = feature_loss(nuplan_feat_logits, nuplan_data) + edge_loss(nuplan_edge_logits, nuplan_z_dict, nuplan_autoencoder.edge_decoders)
+                    nuplan_recon_loss = feature_loss(nuplan_feat_logits, nuplan_data) + edge_loss(
+                        nuplan_edge_logits, nuplan_z_dict, nuplan_autoencoder.edge_decoders
+                    )
 
                     # Projection and KL divergence
-                    l2d_ego_z = l2d_z_dict['ego']
-                    nuplan_ego_z = nuplan_z_dict['ego']
-                    
+                    l2d_ego_z = l2d_z_dict["ego"]
+                    nuplan_ego_z = nuplan_z_dict["ego"]
+
                     l2d_proj_z = projection_head(l2d_ego_z)
                     nuplan_proj_z = projection_head(nuplan_ego_z)
-                    
+
                     kl_loss = kl_divergence_between_gaussians(l2d_proj_z, nuplan_proj_z)
 
                     loss = l2d_recon_loss + nuplan_recon_loss + args.kl_weight * kl_loss
-                    
+
                     total_val_loss += loss.item()
                     total_kl_div += kl_loss.item()
                     total_l2d_recon_loss += l2d_recon_loss.item()
@@ -260,29 +276,43 @@ def run_task(args):
                 f"l2d_recon_loss={avg_l2d_recon_loss:.4f} | "
                 f"nuplan_recon_loss={avg_nuplan_recon_loss:.4f}"
             )
-            
+
+            # wandb logging per epoch (needed for sweeps)
+            if wandb_run is not None:
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "train_loss": avg_train_loss,
+                        "val_loss": avg_val_loss,
+                        "kl_div": avg_kl_div,
+                        "l2d_recon_loss": avg_l2d_recon_loss,
+                        "nuplan_recon_loss": avg_nuplan_recon_loss,
+                    }
+                )
+
             # Save the model at the end of each epoch
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 os.makedirs(os.path.dirname(args.best_model_path), exist_ok=True)
-                torch.save({
-                    'l2d_autoencoder': l2d_autoencoder.state_dict(),
-                    'nuplan_autoencoder': nuplan_autoencoder.state_dict(),
-                    'projection_head': projection_head.state_dict(),
-                }, args.best_model_path)
+                torch.save(
+                    {
+                        "l2d_autoencoder": l2d_autoencoder.state_dict(),
+                        "nuplan_autoencoder": nuplan_autoencoder.state_dict(),
+                        "projection_head": projection_head.state_dict(),
+                    },
+                    args.best_model_path,
+                )
                 print(f"  -> New best model saved to {args.best_model_path}")
-            
-            # Note: evaluation logic needs to be updated as well
-            # For simplicity, we will skip evaluation for now.
-    
+
+    # ----------------- EVALUATION / EMBEDDING EXTRACTION -----------------
     if args.evaluate:
         # L2D dataset
         l2d_dataset = get_graph_dataset(
-            root_dir=os.path.join(args.base_dataset_dir, 'L2D'),
+            root_dir=os.path.join(args.base_dataset_dir, "L2D"),
             mode=args.mode,
             side_information_path=args.side_info_path,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.l2d_risk_scores_path
+            risk_scores_path=args.l2d_risk_scores_path,
         )
 
         l2d_quantizer = QuantileFeatureQuantizer(bins=32, node_types=l2d_dataset.get_metadata()[0])
@@ -306,11 +336,11 @@ def run_task(args):
 
         # NuPlan dataset
         nuplan_dataset = get_graph_dataset(
-            root_dir=os.path.join(args.base_dataset_dir, 'NuPlan'), # Or other nuplan dataset
+            root_dir=os.path.join(args.base_dataset_dir, "NuPlan"),  # Or other nuplan dataset
             mode=args.mode,
             side_information_path=None,
             node_features_to_exclude=args.node_features_to_exclude,
-            risk_scores_path=args.nuplan_risk_scores_path
+            risk_scores_path=args.nuplan_risk_scores_path,
         )
         nuplan_quantizer = QuantileFeatureQuantizer(bins=32, node_types=nuplan_dataset.get_metadata()[0])
         nuplan_quantizer.fit(nuplan_dataset)
@@ -333,12 +363,18 @@ def run_task(args):
             side_info_dim=side_info_dim,
         ).to(device)
 
+        # Projection head (same as in training)
+        projection_head = ProjectionHead(in_dim=args.embed_dim, proj_dim=args.embed_dim).to(device)
+
         print(f"Loading models from {args.best_model_path}")
         state = torch.load(args.best_model_path, map_location=device)
-        l2d_autoencoder.load_state_dict(state['l2d_autoencoder'])
-        nuplan_autoencoder.load_state_dict(state['nuplan_autoencoder'])
+        l2d_autoencoder.load_state_dict(state["l2d_autoencoder"])
+        nuplan_autoencoder.load_state_dict(state["nuplan_autoencoder"])
+        projection_head.load_state_dict(state["projection_head"])
+
         l2d_autoencoder.eval()
         nuplan_autoencoder.eval()
+        projection_head.eval()
 
         # L2D loader
         l2d_loader = DataLoader(
@@ -361,34 +397,53 @@ def run_task(args):
         l2d_graph_embeddings = {}
         nuplan_graph_embeddings = {}
 
-        from src.graph_encoding.autoencoder import batched_graph_embeddings
-
         with torch.no_grad():
             # L2D embeddings
             for data in tqdm(l2d_loader, desc="Extracting L2D embeddings"):
                 data = l2d_quantizer.transform_inplace(data).to(device)
                 z_dict, _, _ = l2d_autoencoder(data)
-                graph_emb = batched_graph_embeddings(z_dict, data, l2d_dataset.get_metadata(), embed_dim_per_type=args.embed_dim)
+                graph_emb = batched_graph_embeddings(
+                    z_dict,
+                    data,
+                    l2d_dataset.get_metadata(),
+                    embed_dim_per_type=args.embed_dim,
+                )
+                # apply projection head
+                proj_graph_emb = projection_head(graph_emb)
+
                 # Get the episode IDs from the episode_path
-                episode_ids = [os.path.splitext(os.path.basename(p))[0].split('_')[0] for p in data["window_meta"].episode_path]
+                episode_ids = [
+                    os.path.splitext(os.path.basename(p))[0].split("_")[0]
+                    for p in data["window_meta"].episode_path
+                ]
 
                 for i, episode_id in enumerate(episode_ids):
-                    l2d_graph_embeddings[episode_id] = graph_emb[i]
+                    l2d_graph_embeddings[episode_id] = proj_graph_emb[i]
 
             # NuPlan embeddings
             for data in tqdm(nuplan_loader, desc="Extracting NuPlan embeddings"):
                 data = nuplan_quantizer.transform_inplace(data).to(device)
                 z_dict, _, _ = nuplan_autoencoder(data)
-                graph_emb = batched_graph_embeddings(z_dict, data, nuplan_dataset.get_metadata(), embed_dim_per_type=args.embed_dim)
-                episode_ids = [os.path.splitext(os.path.basename(p))[0].split('_')[0] for p in data["window_meta"].episode_path]
+                graph_emb = batched_graph_embeddings(
+                    z_dict,
+                    data,
+                    nuplan_dataset.get_metadata(),
+                    embed_dim_per_type=args.embed_dim,
+                )
+                proj_graph_emb = projection_head(graph_emb)
+
+                episode_ids = [
+                    os.path.splitext(os.path.basename(p))[0].split("_")[0]
+                    for p in data["window_meta"].episode_path
+                ]
                 for i, episode_id in enumerate(episode_ids):
-                    nuplan_graph_embeddings[episode_id] = graph_emb[i]
+                    nuplan_graph_embeddings[episode_id] = proj_graph_emb[i]
 
         os.makedirs(args.output_dir, exist_ok=True)
         torch.save(l2d_graph_embeddings, os.path.join(args.output_dir, "l2d_graph_embeddings.pt"))
         torch.save(nuplan_graph_embeddings, os.path.join(args.output_dir, "nuplan_graph_embeddings.pt"))
         print(f"Saved L2D and NuPlan graph embeddings to {args.output_dir}/")
-    
+
     if wandb_run is not None:
         wandb_run.finish()
 
@@ -566,7 +621,7 @@ if __name__ == "__main__":
         help="Random seed for numpy and torch.",
     )
 
-    # NEW: wandb args
+    # wandb args
     parser.add_argument(
         "--use_wandb",
         action="store_true",
@@ -628,7 +683,5 @@ if __name__ == "__main__":
 
             if current_val == default_val:
                 setattr(args, k, v)
-
-
 
     run_task(args)
