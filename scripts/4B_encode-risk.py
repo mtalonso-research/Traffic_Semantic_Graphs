@@ -46,6 +46,7 @@ def run_task(args: argparse.Namespace) -> None:
 
     enforce_dataset_cli_wins(args)
     set_seed(args.seed)
+    args.data_root = os.path.abspath(args.data_root)
 
     if args.l2d == args.nup:
         raise SystemExit("Specify exactly one dataset: --l2d or --nup (not both, not neither).")
