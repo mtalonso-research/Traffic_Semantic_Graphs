@@ -44,9 +44,9 @@ def quick_setup_depth_pro(verbose):
     Returns:
         bool: True if the model was downloaded successfully, False otherwise.
     """
-    if not os.path.exists('./ml-depth-pro'):
+    if not os.path.exists('./lib/ml-depth-pro'):
         return False
-    checkpoint_dir = './ml-depth-pro/checkpoints'
+    checkpoint_dir = './lib/ml-depth-pro/checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
     try:
         from huggingface_hub import hf_hub_download
@@ -73,7 +73,7 @@ def initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose):
         if not download_depth_pro_model(verbose):
             return (None, None, None)
         original_dir = os.getcwd()
-        depth_pro_dir = './ml-depth-pro'
+        depth_pro_dir = './lib/ml-depth-pro'
         try:
             os.chdir(depth_pro_dir)
             model, transform = depth_pro.create_model_and_transforms()
@@ -99,7 +99,7 @@ def download_depth_pro_model(verbose):
     Returns:
         bool: True if the model was downloaded successfully, False otherwise.
     """
-    checkpoint_dir = './ml-depth-pro/checkpoints'
+    checkpoint_dir = './lib/ml-depth-pro/checkpoints'
     model_path = os.path.join(checkpoint_dir, 'depth_pro.pt')
     if os.path.exists(model_path):
         return True
@@ -124,13 +124,13 @@ def try_alternative_download(verbose):
     """
     try:
         import subprocess
-        script_path = './ml-depth-pro/get_pretrained_models.sh'
+        script_path = './lib//ml-depth-pro/get_pretrained_models.sh'
         if os.path.exists(script_path):
-            result = subprocess.run(['bash', script_path], cwd='./ml-depth-pro', capture_output=True, text=True)
+            result = subprocess.run(['bash', script_path], cwd='./lib/ml-depth-pro', capture_output=True, text=True)
             if result.returncode == 0:
                 original_dir = os.getcwd()
                 try:
-                    os.chdir('./ml-depth-pro')
+                    os.chdir('./lib/ml-depth-pro')
                     import depth_pro
                     model, transform = depth_pro.create_model_and_transforms()
                     model.eval()
@@ -219,20 +219,20 @@ def setting_up(verbose=True):
     Returns:
         tuple: A tuple containing the availability of Depth Pro, the model, the transform, and the device.
     """
-    checkpoint_dir = './ml-depth-pro/checkpoints'
+    checkpoint_dir = './lib/ml-depth-pro/checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
     try:
         model_path = hf_hub_download(repo_id='apple/DepthPro', filename='depth_pro.pt', local_dir=checkpoint_dir)
     except Exception as e: print(f'Error: {e}')
-    if os.path.exists('../ml-depth-pro'): 
-        sys.path.insert(0, '../ml-depth-pro')
+    if os.path.exists('../lib/ml-depth-pro'): 
+        sys.path.insert(0, '../lib/ml-depth-pro')
     try:
         import depth_pro
         DEPTH_PRO_AVAILABLE = True
     except ImportError as e:
         DEPTH_PRO_AVAILABLE = False
     if DEPTH_PRO_AVAILABLE:
-        model_path = './ml-depth-pro/checkpoints/depth_pro.pt'
+        model_path = './lib/ml-depth-pro/checkpoints/depth_pro.pt'
         if not os.path.exists(model_path):
             quick_setup_depth_pro(verbose)
     depth_model, depth_transform, depth_device = initialize_depth_pro(DEPTH_PRO_AVAILABLE, depth_pro, verbose)

@@ -133,8 +133,7 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
             continue
 
         # Build expected tag filename: "episode_025001.json"
-        #tag_fname = f"episode_{episode_idx:06d}.json"
-        tag_fname = f"episode_{episode_idx:06}.json"
+        tag_fname = f"episode_{episode_str.zfill(6)}.json"
         tag_path = os.path.join(tag_dir, tag_fname)
 
         if not os.path.exists(tag_path):
@@ -245,7 +244,7 @@ def extract_targets(graph_dir, tag_dir, output_dir, output_filename="targets.jso
             json.dump(raw_targets, f, indent=2)
         print(f"Saved raw targets for {len(raw_targets)} episodes to {raw_out_path}")
 
-def visualize_target_distribution(targets_path):
+def visualize_target_distribution(targets_path, output_dir="data/figures/", file_prefix=""):
     with open(targets_path, "r") as f:
         targets = json.load(f)
 
@@ -277,4 +276,9 @@ def visualize_target_distribution(targets_path):
         plt.xlabel("bin value")
         plt.ylabel("count")
         plt.tight_layout()
-        plt.show()    
+        
+        # Save the figure
+        output_filename = os.path.join(output_dir, f"{file_prefix}_{names[i]}.png")
+        plt.savefig(output_filename)
+        plt.close() # Close the figure to free memory
+        print(f"Saved histogram to {output_filename}")    
