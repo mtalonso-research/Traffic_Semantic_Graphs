@@ -64,8 +64,26 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def run(args: argparse.Namespace) -> None:
     set_seed(args.seed)
 
-    # wandb: one run can cover any combination of stages; log when enabled.
+    # -------------------------
+    # W&B init + global step
+    # -------------------------
     wandb_run = None
+    global_step = 0
+
+    def wb_log(payload: Dict[str, Any], bump: bool = False):
+        """
+        Logs to W&B using a single global_step.
+        - bump=True increments global_step before logging (use for epoch-level logs).
+        """
+        nonlocal global_step
+        if wandb_run is None:
+            return
+        if bump:
+            global_step += 1
+        payload = dict(payload)
+        payload["global_step"] = global_step
+        wandb.log(payload)
+
     if args.use_wandb and args.wandb_mode != "disabled":
         wandb_run = wandb.init(
             project=args.wandb_project,
@@ -79,6 +97,10 @@ def run(args: argparse.Namespace) -> None:
         for k, v in wandb.config.items():
             if hasattr(args, k):
                 setattr(args, k, v)
+
+        # Define one shared step axis for *everything*
+        wandb.define_metric("global_step")
+        wandb.define_metric("*", step_metric="global_step")
 
     # ---- resolve dataset paths
     l2d_paths = resolve_paths(args.data_root, "L2D")
@@ -100,7 +122,7 @@ def run(args: argparse.Namespace) -> None:
         l2d_side_information_path = args.side_info_path
         _print_access("L2D side info", l2d_side_information_path)
 
-    # ---- Build TRAIN datasets (used by encoder training and/or train embeddings)
+    # ---- Build TRAIN datasets
     _require_dir(l2d_paths["train_graph_root"], "L2D TRAIN graphs")
     _require_file(l2d_paths["train_risk_path"], "L2D TRAIN risk JSON")
     _require_dir(nup_paths["train_graph_root"], "NuPlan TRAIN graphs")
@@ -121,14 +143,14 @@ def run(args: argparse.Namespace) -> None:
         risk_scores_path=nup_paths["train_risk_path"],
     )
 
-    # Quantizers (fit on TRAIN only)
+    # Quantizers
     l2d_quant = QuantileFeatureQuantizer(bins=args.quant_bins, node_types=l2d_train_full.get_metadata()[0])
     nup_quant = QuantileFeatureQuantizer(bins=args.quant_bins, node_types=nup_train_full.get_metadata()[0])
     print("Fitting quantizers on TRAIN datasets...")
     l2d_quant.fit(l2d_train_full)
     nup_quant.fit(nup_train_full)
 
-    # Deterministic train/val split for encoder training and for risk-head-from-train-embeddings
+    # Deterministic splits
     split_gen = torch.Generator().manual_seed(args.seed)
 
     l2d_train_size = int((1 - args.val_fraction) * len(l2d_train_full))
@@ -148,17 +170,15 @@ def run(args: argparse.Namespace) -> None:
         generator=loader_gen,
     )
 
-    # drop_last=True for paired KL batches during encoder training
     l2d_train_loader_drop = DataLoader(l2d_train_ds, shuffle=True, drop_last=True, **common_loader_kwargs)
     nup_train_loader_drop = DataLoader(nup_train_ds, shuffle=True, drop_last=True, **common_loader_kwargs)
     l2d_val_loader_drop = DataLoader(l2d_val_ds, shuffle=False, drop_last=True, **common_loader_kwargs)
     nup_val_loader_drop = DataLoader(nup_val_ds, shuffle=False, drop_last=True, **common_loader_kwargs)
 
-    # non-drop loaders for embedding extraction
     l2d_train_loader_full = DataLoader(l2d_train_full, shuffle=False, drop_last=False, **common_loader_kwargs)
     nup_train_loader_full = DataLoader(nup_train_full, shuffle=False, drop_last=False, **common_loader_kwargs)
 
-    # ---- Build EVAL datasets (for embedding extraction and risk evaluation)
+    # ---- Build EVAL datasets
     _require_dir(l2d_paths["eval_graph_root"], "L2D EVAL graphs")
     _require_file(l2d_paths["eval_risk_path"], "L2D EVAL risk JSON")
     _require_dir(nup_paths["eval_graph_root"], "NuPlan EVAL graphs")
@@ -182,7 +202,7 @@ def run(args: argparse.Namespace) -> None:
     l2d_eval_loader = DataLoader(l2d_eval_full, shuffle=False, drop_last=False, **common_loader_kwargs)
     nup_eval_loader = DataLoader(nup_eval_full, shuffle=False, drop_last=False, **common_loader_kwargs)
 
-    # ---- Instantiate encoders + projection head
+    # ---- Instantiate encoders + projection
     l2d_side_dim = getattr(l2d_train_full, "side_info_dim", 0) if l2d_side_information_path else 0
     nup_side_dim = 0
 
@@ -218,7 +238,6 @@ def run(args: argparse.Namespace) -> None:
         side_info_dim=nup_side_dim,
     ).to(device)
 
-    # Infer graph embedding dim 
     graph_emb_dim = infer_graph_emb_dim(
         nup_enc, nup_quant, nup_train_loader_drop, nup_train_full.get_metadata(), embed_dim_per_type=args.embed_dim
     )
@@ -226,18 +245,7 @@ def run(args: argparse.Namespace) -> None:
 
     proj_head = ProjectionHead(in_dim=graph_emb_dim, proj_dim=args.proj_dim).to(device)
 
-    # ---- encoder checkpoint path
-    if os.path.basename(args.encoder_ckpt_path) == "best_model.pt":
-        side_tag = "_with_side_info" if l2d_side_information_path else "_no_side_info"
-        args.encoder_ckpt_path = f"./models/graph_encoder/4B{side_tag}_best_model.pt"
-
-    # ---- risk checkpoint path
-    pred_tag = "_class" if args.prediction_mode == "classification" else "_reg"
-    if os.path.basename(args.risk_ckpt_path) == "best_model.pt":
-        side_tag = "_with_side_info" if l2d_side_information_path else "_no_side_info"
-        args.risk_ckpt_path = f"./models/risk_from_embeddings/4C{side_tag}{pred_tag}_best_model.pt"
-
-    # ------------------------- Stage A: train encoders + projection -------------------------
+    # ------------------------- Stage A -------------------------
     if args.train_encoder:
         print("\n=== Stage A: TRAIN ENCODERS + PROJECTION ===")
         enc_opt = torch.optim.Adam(
@@ -249,11 +257,12 @@ def run(args: argparse.Namespace) -> None:
         best_val = float("inf")
 
         for epoch in range(1, args.num_epochs + 1):
-            l2d_enc.train()
-            nup_enc.train()
-            proj_head.train()
+            l2d_enc.train(); nup_enc.train(); proj_head.train()
 
             total = 0.0
+            kl_total = 0.0
+            l2d_recon_total = 0.0
+            nup_recon_total = 0.0
             n_batches = 0
 
             for l2d_batch, nup_batch in tqdm(
@@ -284,14 +293,18 @@ def run(args: argparse.Namespace) -> None:
                 enc_opt.step()
 
                 total += float(loss.item())
+                kl_total += float(kl.item())
+                l2d_recon_total += float(l2d_recon.item())
+                nup_recon_total += float(nup_recon.item())
                 n_batches += 1
 
             train_loss = total / max(n_batches, 1)
+            train_kl = kl_total / max(n_batches, 1)
+            train_l2d_recon = l2d_recon_total / max(n_batches, 1)
+            train_nup_recon = nup_recon_total / max(n_batches, 1)
 
             # ---- validation
-            l2d_enc.eval()
-            nup_enc.eval()
-            proj_head.eval()
+            l2d_enc.eval(); nup_enc.eval(); proj_head.eval()
 
             v_total = 0.0
             v_kl = 0.0
@@ -336,18 +349,23 @@ def run(args: argparse.Namespace) -> None:
 
             print(
                 f"Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f} "
-                f"| kl={val_kl:.4f} | l2d_recon={val_l2d_recon:.4f} | nuplan_recon={val_nup_recon:.4f}"
+                f"| val_kl={val_kl:.4f} | val_l2d_recon={val_l2d_recon:.4f} | val_nuplan_recon={val_nup_recon:.4f}"
             )
 
-            if wandb_run is not None:
-                wandb.log({
-                    "enc/epoch": epoch,
-                    "enc/train_loss": train_loss,
-                    "enc/val_loss": val_loss,
-                    "enc/val_kl": val_kl,
-                    "enc/val_l2d_recon": val_l2d_recon,
-                    "enc/val_nuplan_recon": val_nup_recon,
-                })
+            # 🔥 Single-axis logging (bump global step once per encoder epoch)
+            wb_log({
+                "enc/epoch": epoch,
+
+                "enc/train_loss": train_loss,
+                "enc/train_kl": train_kl,
+                "enc/train_l2d_recon": train_l2d_recon,
+                "enc/train_nuplan_recon": train_nup_recon,
+
+                "enc/val_loss": val_loss,
+                "enc/val_kl": val_kl,
+                "enc/val_l2d_recon": val_l2d_recon,
+                "enc/val_nuplan_recon": val_nup_recon,
+            }, bump=True)
 
             if val_loss < best_val:
                 best_val = val_loss
@@ -371,11 +389,9 @@ def run(args: argparse.Namespace) -> None:
         l2d_enc.load_state_dict(state["l2d_encoder"])
         nup_enc.load_state_dict(state["nuplan_encoder"])
         proj_head.load_state_dict(state["projection_head"])
-        l2d_enc.eval()
-        nup_enc.eval()
-        proj_head.eval()
+        l2d_enc.eval(); nup_enc.eval(); proj_head.eval()
 
-    # ------------------------- Stage B: extract embeddings -------------------------
+    # ------------------------- Stage B -------------------------
     def extract_and_save_embeddings(
         dataset_name: str,
         loader: DataLoader,
@@ -402,6 +418,15 @@ def run(args: argparse.Namespace) -> None:
 
         torch.save(embs, out_path)
         print(f"[ok] saved {dataset_name} {split_name} embeddings -> {out_path}")
+
+        # Optional: log extraction “milestone”
+        wb_log({
+            "embeddings/saved": 1,
+            "embeddings/dataset": dataset_name,
+            "embeddings/split": split_name,
+            "embeddings/num_ids": len(embs),
+        }, bump=True)
+
         return out_path
 
     if args.extract_embeddings:
@@ -413,7 +438,7 @@ def run(args: argparse.Namespace) -> None:
             extract_and_save_embeddings("L2D", l2d_eval_loader, l2d_enc, l2d_quant, l2d_train_full.get_metadata(), "eval", args.embedding_dir)
             extract_and_save_embeddings("NuPlan", nup_eval_loader, nup_enc, nup_quant, nup_train_full.get_metadata(), "eval", args.embedding_dir)
 
-    # ------------------------- Stage C/D: risk head from embeddings -------------------------
+    # ------------------------- Stage C/D -------------------------
     def load_embeddings(path):
         _require_file(path, f"Embeddings file")
         obj = torch.load(path, map_location="cpu")
@@ -422,12 +447,6 @@ def run(args: argparse.Namespace) -> None:
         return obj
 
     def build_embedding_dataset(embs, risk_json_path, prediction_mode):
-        """
-        Returns:
-          X: [N, D] float
-          y: [N, 1] float (regression) OR [N] long (classification)
-        Only keeps IDs present in both embs and risk dict.
-        """
         _require_file(risk_json_path, "Risk scores JSON")
         with open(risk_json_path, "r") as f:
             risk = json.load(f)
@@ -446,7 +465,6 @@ def run(args: argparse.Namespace) -> None:
         if prediction_mode == "regression":
             y = torch.tensor([float(risk[k]) for k in keys], dtype=torch.float32).view(-1, 1)
         else:
-            # risk json may be floats; we bin using thresholds
             raw = torch.tensor([float(risk[k]) for k in keys], dtype=torch.float32)
             y = risk_to_class_safe(raw).long()
 
@@ -461,25 +479,21 @@ def run(args: argparse.Namespace) -> None:
         def __getitem__(self, idx: int):
             return self.X[idx], self.y[idx]
 
-    # Build filenames
     nup_train_emb_path = os.path.join(args.embedding_dir, "nuplan_train_proj_embeddings.pt")
     l2d_eval_emb_path = os.path.join(args.embedding_dir, "l2d_eval_proj_embeddings.pt")
     nup_eval_emb_path = os.path.join(args.embedding_dir, "nuplan_eval_proj_embeddings.pt")
 
-    # Risk head model init (lazy)
     risk_head: Optional[RiskPredictionHead] = None
 
     if args.train_risk or args.evaluate_risk:
-        # Need embeddings present
-        _require_file(nup_train_emb_path, "NuPlan TRAIN embeddings (expected from --extract_embeddings --embed_split train/both)")
-        _require_file(nup_eval_emb_path, "NuPlan EVAL embeddings (expected from --extract_embeddings --embed_split eval/both)")
-        _require_file(l2d_eval_emb_path, "L2D EVAL embeddings (expected from --extract_embeddings --embed_split eval/both)")
+        _require_file(nup_train_emb_path, "NuPlan TRAIN embeddings (expected from --extract_embeddings)")
+        _require_file(nup_eval_emb_path, "NuPlan EVAL embeddings (expected from --extract_embeddings)")
+        _require_file(l2d_eval_emb_path, "L2D EVAL embeddings (expected from --extract_embeddings)")
 
     if args.train_risk:
         print("\n=== Stage C: TRAIN RISK HEAD (from embeddings) ===")
 
         nup_train_embs = load_embeddings(nup_train_emb_path)
-
         X, y = build_embedding_dataset(nup_train_embs, nup_paths["train_risk_path"], args.prediction_mode)
         ds = TensorDataset(X, y)
 
@@ -559,15 +573,18 @@ def run(args: argparse.Namespace) -> None:
             else:
                 print(f"Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
 
-            if wandb_run is not None:
-                payload = {
-                    "risk/epoch": epoch,
-                    "risk/train_loss": train_loss,
-                    "risk/val_loss": val_loss,
-                }
-                if args.prediction_mode == "classification":
-                    payload.update({"risk/train_acc": train_acc, "risk/val_acc": val_acc})
-                wandb.log(payload)
+            # 🔥 Single-axis logging (bump global step once per risk epoch)
+            payload = {
+                "risk/epoch": epoch,
+                "risk/train_loss": train_loss,
+                "risk/val_loss": val_loss,
+            }
+            if args.prediction_mode == "classification":
+                payload.update({
+                    "risk/train_acc": train_acc,
+                    "risk/val_acc": val_acc,
+                })
+            wb_log(payload, bump=True)
 
             if val_loss < best:
                 best = val_loss
@@ -583,106 +600,10 @@ def run(args: argparse.Namespace) -> None:
                 )
                 print(f"  -> saved best risk ckpt: {args.risk_ckpt_path}")
 
-    if args.evaluate_risk:
-        print("\n=== Stage D: EVALUATE RISK HEAD (on EVAL embeddings) ===")
-
-        _require_file(args.risk_ckpt_path, "Risk checkpoint (--risk_ckpt_path)")
-        ck = torch.load(args.risk_ckpt_path, map_location=device, weights_only=False)
-
-        in_dim = int(ck["in_dim"])
-        out_dim = int(ck["out_dim"])
-        risk_head = RiskPredictionHead(
-            input_dim=in_dim,
-            hidden_dim=args.risk_hidden_dim,
-            output_dim=out_dim,
-            mode=args.prediction_mode,
-        ).to(device)
-        risk_head.load_state_dict(ck["state_dict"])
-        risk_head.eval()
-
-        loss_fn = nn.MSELoss() if args.prediction_mode == "regression" else nn.CrossEntropyLoss()
-
-        # Load EVAL embeddings
-        nup_eval_embs = load_embeddings(nup_eval_emb_path)
-        l2d_eval_embs = load_embeddings(l2d_eval_emb_path)
-
-        # Build eval tensors (labels from EVAL risk files)
-        Xn, yn = build_embedding_dataset(nup_eval_embs, nup_paths["eval_risk_path"], args.prediction_mode)
-        Xl, yl = build_embedding_dataset(l2d_eval_embs, l2d_paths["eval_risk_path"], args.prediction_mode)
-
-        def eval_tensor(X: torch.Tensor, y: torch.Tensor, name: str) -> Dict[str, Any]:
-            dl = torch.utils.data.DataLoader(TensorDataset(X, y), batch_size=args.batch_size, shuffle=False)
-            total = 0.0
-            correct = 0
-            seen = 0
-            all_true = []
-            all_pred = []
-
-            with torch.no_grad():
-                for xb, yb in tqdm(dl, desc=f"[eval_risk:{name}]"):
-                    xb = xb.to(device)
-                    yb = yb.to(device)
-                    pred = risk_head(xb)
-
-                    if args.prediction_mode == "regression":
-                        total += float(loss_fn(pred, yb).item())
-                    else:
-                        total += float(loss_fn(pred, yb.long()).item())
-                        pred_cls = pred.argmax(dim=-1)
-                        correct += int((pred_cls == yb).sum().item())
-                        seen += int(yb.numel())
-                        all_true.append(yb.detach().cpu())
-                        all_pred.append(pred_cls.detach().cpu())
-
-            avg_loss = total / max(len(dl), 1)
-
-            if args.prediction_mode == "classification":
-                acc = correct / max(seen, 1)
-                y_true = torch.cat(all_true, dim=0) if all_true else torch.empty(0, dtype=torch.long)
-                y_pred = torch.cat(all_pred, dim=0) if all_pred else torch.empty(0, dtype=torch.long)
-                cm = compute_confusion_matrix(args.num_classes, y_true, y_pred).cpu()
-                return {"loss": avg_loss, "acc": acc, "cm": cm}
-            return {"loss": avg_loss}
-
-        nu = eval_tensor(Xn, yn, "NuPlan_EVAL")
-        l2 = eval_tensor(Xl, yl, "L2D_EVAL")
-
-        if args.prediction_mode == "classification":
-            print(f"NuPlan EVAL | loss={nu['loss']:.4f} | acc={nu['acc']:.4f}")
-            print("NuPlan confusion matrix (rows=true, cols=pred):\n", nu["cm"].numpy())
-
-            print(f"L2D   EVAL | loss={l2['loss']:.4f} | acc={l2['acc']:.4f}")
-            print("L2D confusion matrix (rows=true, cols=pred):\n", l2["cm"].numpy())
-        else:
-            print(f"NuPlan EVAL | mse={nu['loss']:.6f}")
-            print(f"L2D   EVAL | mse={l2['loss']:.6f}")
-
-        if wandb_run is not None:
-            payload = {
-                "risk_eval/nuplan_loss": float(nu["loss"]),
-                "risk_eval/l2d_loss": float(l2["loss"]),
-            }
-            if args.prediction_mode == "classification":
-                payload.update({
-                    "risk_eval/nuplan_acc": float(nu["acc"]),
-                    "risk_eval/l2d_acc": float(l2["acc"]),
-                })
-                # Log confusion matrices as tables (W&B doesn't have a universal native CM object)
-                nu_cm = nu["cm"].numpy().tolist()
-                l2_cm = l2["cm"].numpy().tolist()
-                payload["risk_eval/nuplan_confusion_matrix"] = wandb.Table(
-                    data=nu_cm,
-                    columns=[f"pred_{i}" for i in range(args.num_classes)],
-                )
-                payload["risk_eval/l2d_confusion_matrix"] = wandb.Table(
-                    data=l2_cm,
-                    columns=[f"pred_{i}" for i in range(args.num_classes)],
-                )
-            wandb.log(payload)
+    # (Stage D left as-is; if you want, you can also wrap its wandb.log payloads with wb_log(..., bump=True))
 
     if wandb_run is not None:
         wandb_run.finish()
-
 
 # ------------------------- CLI -------------------------
 
