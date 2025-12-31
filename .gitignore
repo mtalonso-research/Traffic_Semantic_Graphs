@@ -12,6 +12,7 @@ lib/
 .venv/
 env/
 venv/
+outputs/
 nuplan-devkit/
 .ipynb_checkpoints/
 .DS_Store

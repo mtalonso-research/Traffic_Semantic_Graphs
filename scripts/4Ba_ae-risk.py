@@ -95,28 +95,61 @@ def run_task(args: argparse.Namespace) -> None:
     # All artifacts go under:
     #   <output_root>/4Ba/<dataset>/<class|reg>/<run_id>/
     # This guarantees parallel sweep runs do not collide.
-    output_root = _ensure_dir(os.path.abspath(args.output_root))
-    run_dir = _ensure_dir(
-        os.path.join(output_root, "4Ba", dataset_name, ("classification" if args.prediction_mode == "classification" else "regression"), run_id)
-    )
+    # ---------------- OUTPUT ISOLATION (NO OVERWRITES) ----------------
+    # Two modes:
+    #  - Training mode: create a fresh per-run directory under output_root using run_id.
+    #  - Eval-only mode (--evaluate): do NOT create a new run_id/run_dir. Use the checkpoint path directly.
 
-    # Log run_dir for debugging + for your future self
-    if wandb_run is not None:
-        wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
+    # If user explicitly provides run_id, honor it (useful for reproducibility / re-runs).
+    if getattr(args, "run_id", None):
+        run_id = args.run_id
 
-    # Default checkpoint naming (kept, but now placed in run_dir)
-    # If user provides a best_model_path, we still isolate by putting it into run_dir
-    # (we keep the filename portion but change the directory).
-    if os.path.basename(args.best_model_path) == "best_model.pt":
-        risk_ckpt_name = f"4Ba_{dataset_name}{side_info_str}{pred_tag}_best_model.pt"
+    is_eval_only = bool(args.evaluate) and not bool(args.train_autoencoder) and not bool(args.train_risk)
+
+    if is_eval_only:
+        # EVAL-ONLY: use the provided checkpoint path as-is.
+        best_model_path = os.path.abspath(args.best_model_path)
+        _require_file(best_model_path, "Checkpoint (--best_model_path) for evaluation")
+
+        run_dir = os.path.dirname(best_model_path)
+        ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
+        eval_results_path = os.path.join(run_dir, "evaluation_results.json")
+
+        # For logging/debugging
+        if wandb_run is not None:
+            wandb.config.update(
+                {"run_id": run_id, "run_dir": run_dir, "best_model_path": best_model_path},
+                allow_val_change=True,
+            )
+
     else:
-        risk_ckpt_name = os.path.basename(args.best_model_path)
+        # TRAINING (or anything that might write artifacts): isolate by run_id.
+        output_root = _ensure_dir(os.path.abspath(args.output_root))
+        run_dir = _ensure_dir(
+            os.path.join(
+                output_root,
+                "4Ba",
+                dataset_name,
+                ("classification" if args.prediction_mode == "classification" else "regression"),
+                run_id,
+            )
+        )
 
-    best_model_path = os.path.join(run_dir, risk_ckpt_name)
-    ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
+        # Log run_dir for debugging + for your future self
+        if wandb_run is not None:
+            wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
 
-    # Also isolate evaluation outputs so multiple runs never fight over the same JSON.
-    eval_results_path = os.path.join(run_dir, "evaluation_results.json")
+        # Default checkpoint naming (kept, but now placed in run_dir)
+        if os.path.basename(args.best_model_path) == "best_model.pt":
+            risk_ckpt_name = f"4Ba_{dataset_name}{side_info_str}{pred_tag}_best_model.pt"
+        else:
+            risk_ckpt_name = os.path.basename(args.best_model_path)
+
+        best_model_path = os.path.join(run_dir, risk_ckpt_name)
+        ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
+
+        # Also isolate evaluation outputs so multiple runs never fight over the same JSON.
+        eval_results_path = os.path.join(run_dir, "evaluation_results.json")
 
     paths = resolve_paths(args, dataset_name)
 
@@ -566,6 +599,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_root", type=str, default="./outputs", help="Root dir for per-run outputs (no overwrites).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--load_config", type=str, default=None)
+    parser.add_argument("--run_id", type=str, default=None, help="Optional: force a specific run_id (prevents random local-* ids).")
 
     args = parser.parse_args()
     args = apply_yaml_overrides(parser, args)
