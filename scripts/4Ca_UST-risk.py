@@ -24,11 +24,16 @@ Stages (each controlled by flags):
      Logs loss (+ accuracy/confusion matrix for classification).
 
 This version:
-  - Implements Stage D (previously missing)
+  - Implements Stage D
   - Fixes L2D eval metadata bug in embedding extraction
   - Adds 4Ba-style run isolation + checkpoint naming under:
       <output_root>/4Ca/L2D_NuPlan/<classification|regression>/<run_id>/
   - Removes unused --class_thresholds (binning handled by risk_to_class_safe internally)
+
+Fixes for sweeps:
+  - Auto-enable W&B when running under wandb agent/sweep (unless wandb_mode == disabled)
+  - Ensure risk metrics get logged under sweeps
+  - Do NOT require eval embeddings unless Stage D is requested
 """
 
 import argparse
@@ -86,6 +91,16 @@ def _ensure_dir(path: str) -> str:
     return path
 
 
+def _running_under_wandb_agent_or_sweep() -> bool:
+    # Typical env vars set by W&B agents/sweeps.
+    for k in ("WANDB_SWEEP_ID", "WANDB_AGENT_ID"):
+        if os.environ.get(k):
+            return True
+    if os.environ.get("WANDB_RUN_ID"):
+        return True
+    return False
+
+
 def run(args: argparse.Namespace) -> None:
     set_seed(args.seed)
 
@@ -95,26 +110,37 @@ def run(args: argparse.Namespace) -> None:
     wandb_run = None
     global_step = 0
 
+    # If under a sweep/agent, force-enable logging unless explicitly disabled
+    if _running_under_wandb_agent_or_sweep() and (not args.use_wandb) and (args.wandb_mode != "disabled"):
+        args.use_wandb = True
+
     def wb_log(payload: Dict[str, Any], bump: bool = False):
         """Logs to W&B using a single global_step."""
         nonlocal global_step
-        if wandb_run is None:
+
+        # Log if wandb is active either via wandb_run or wandb.run (agent-managed)
+        if (wandb_run is None) and (wandb.run is None):
             return
+
         if bump:
             global_step += 1
         payload = dict(payload)
         payload["global_step"] = global_step
         wandb.log(payload)
 
+    # Robust project fallback: CLI > env > None (wandb may still accept via settings)
+    wandb_project = args.wandb_project or os.environ.get("WANDB_PROJECT")
+
     if args.use_wandb and args.wandb_mode != "disabled":
         wandb_run = wandb.init(
-            project=args.wandb_project,
+            project=wandb_project,
             entity=args.wandb_entity or None,
             name=args.wandb_run_name or None,
             group=args.wandb_group or None,
             mode=args.wandb_mode,
             config=vars(args),
         )
+
         # allow sweep overrides
         for k, v in wandb.config.items():
             if hasattr(args, k):
@@ -126,17 +152,13 @@ def run(args: argparse.Namespace) -> None:
     # -------------------------
     # 4Ba-style run isolation / naming
     # -------------------------
-    # EVAL-ONLY mode: if we are ONLY evaluating risk and not training/extracting anything,
-    # then we don't create a new run_id/run_dir; we use the directory of the risk checkpoint.
     is_eval_only = bool(args.evaluate_risk) and not bool(args.train_encoder) and not bool(args.extract_embeddings) and not bool(args.train_risk)
 
     if is_eval_only:
-        # Use provided checkpoint directory as run_dir
         risk_ckpt_abs = os.path.abspath(args.risk_ckpt_path)
         _require_file(risk_ckpt_abs, "Risk checkpoint (--risk_ckpt_path) for eval-only")
         run_dir = os.path.dirname(risk_ckpt_abs)
 
-        # Keep encoder_ckpt_path as provided; it may be needed if user wants to re-extract etc.
         args.risk_ckpt_path = risk_ckpt_abs
         args.encoder_ckpt_path = os.path.abspath(args.encoder_ckpt_path)
         args.embedding_dir = os.path.abspath(args.embedding_dir)
@@ -145,18 +167,15 @@ def run(args: argparse.Namespace) -> None:
         if wandb_run is not None:
             wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
     else:
-        # Training / extraction / anything that writes artifacts:
         run_id = args.run_id or (wandb_run.id if wandb_run is not None else _make_fallback_run_id())
         pred_dir = "classification" if args.prediction_mode == "classification" else "regression"
         output_root = _ensure_dir(os.path.abspath(args.output_root))
         run_dir = _ensure_dir(os.path.join(output_root, "4Ca", "L2D_NuPlan", pred_dir, run_id))
 
-        # Default checkpoint naming (4Ba-style: *_best_model.pt)
-        # Only auto-rewrite if user left defaults ending in best_model.pt
+        # Rewrite default ckpt paths into run_dir (4Ba-style)
         if os.path.basename(args.encoder_ckpt_path) == "best_model.pt":
             args.encoder_ckpt_path = os.path.join(run_dir, "4Ca_L2D_NuPlan_enc_best_model.pt")
         else:
-            # if user gave relative path, keep it but make absolute
             args.encoder_ckpt_path = os.path.abspath(args.encoder_ckpt_path)
 
         if os.path.basename(args.risk_ckpt_path) == "best_model.pt":
@@ -165,7 +184,6 @@ def run(args: argparse.Namespace) -> None:
             args.risk_ckpt_path = os.path.abspath(args.risk_ckpt_path)
 
         # Put embeddings under run_dir by default (prevents sweep collisions)
-        # If user explicitly set embedding_dir, respect it.
         default_embed_dir_1 = "./data/graph_embeddings/"
         default_embed_dir_2 = "./data/graph_embeddings"
         if args.embedding_dir in (default_embed_dir_1, default_embed_dir_2):
@@ -259,7 +277,7 @@ def run(args: argparse.Namespace) -> None:
     nup_train_loader_full = DataLoader(nup_train_full, shuffle=False, drop_last=False, **common_loader_kwargs)
 
     # -------------------------
-    # Build EVAL datasets
+    # Build EVAL datasets (kept as your original behavior)
     # -------------------------
     _require_dir(l2d_paths["eval_graph_root"], "L2D EVAL graphs")
     _require_file(l2d_paths["eval_risk_path"], "L2D EVAL risk JSON")
@@ -443,7 +461,6 @@ def run(args: argparse.Namespace) -> None:
                     nup_p = proj_head(nup_g)
 
                     kl = kl_divergence_between_gaussians(l2d_p, nup_p)
-
                     loss = l2d_recon + nup_recon + args.kl_weight * kl
 
                     v_total += float(loss.item())
@@ -566,7 +583,7 @@ def run(args: argparse.Namespace) -> None:
                 args.embedding_dir,
             )
         if args.embed_split in ("eval", "both"):
-            # ✅ FIX: use eval metadata for eval extraction
+            # FIX: use eval metadata for eval extraction
             extract_and_save_embeddings(
                 "L2D",
                 l2d_eval_loader,
@@ -633,10 +650,22 @@ def run(args: argparse.Namespace) -> None:
     l2d_eval_emb_path = os.path.join(args.embedding_dir, "l2d_eval_proj_embeddings.pt")
     nup_eval_emb_path = os.path.join(args.embedding_dir, "nuplan_eval_proj_embeddings.pt")
 
-    if args.train_risk or args.evaluate_risk:
-        _require_file(nup_train_emb_path, "NuPlan TRAIN embeddings (expected from --extract_embeddings)")
-        _require_file(nup_eval_emb_path, "NuPlan EVAL embeddings (expected from --extract_embeddings)")
-        _require_file(l2d_eval_emb_path, "L2D EVAL embeddings (expected from --extract_embeddings)")
+    # FIX: only require what’s actually needed
+    if args.train_risk:
+        _require_file(
+            nup_train_emb_path,
+            "NuPlan TRAIN embeddings (expected from --extract_embeddings --embed_split train/both)",
+        )
+
+    if args.evaluate_risk:
+        _require_file(
+            nup_eval_emb_path,
+            "NuPlan EVAL embeddings (expected from --extract_embeddings --embed_split eval/both)",
+        )
+        _require_file(
+            l2d_eval_emb_path,
+            "L2D EVAL embeddings (expected from --extract_embeddings --embed_split eval/both)",
+        )
 
     # ------------------------- Stage C: TRAIN RISK HEAD -------------------------
     if args.train_risk:
@@ -656,6 +685,7 @@ def run(args: argparse.Namespace) -> None:
 
         in_dim = X.shape[1]
         out_dim = 1 if args.prediction_mode == "regression" else args.num_classes
+
         risk_head = RiskPredictionHead(
             input_dim=in_dim,
             hidden_dim=args.risk_hidden_dim,
@@ -726,6 +756,7 @@ def run(args: argparse.Namespace) -> None:
             else:
                 print(f"Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
 
+            # Sweep-critical metrics
             payload = {
                 "risk/epoch": epoch,
                 "risk/train_loss": train_loss,
@@ -733,6 +764,7 @@ def run(args: argparse.Namespace) -> None:
             }
             if args.prediction_mode == "classification":
                 payload.update({"risk/train_acc": train_acc, "risk/val_acc": val_acc})
+
             wb_log(payload, bump=True)
 
             if val_loss < best:
@@ -816,21 +848,21 @@ def run(args: argparse.Namespace) -> None:
                 result["acc"] = acc
                 result["confusion_matrix"] = cm.tolist()
                 print(f"{name}: loss={avg_loss:.4f} acc={acc:.4f}")
-                print(f"{name} confusion matrix (rows=true, cols=pred):\n{cm}")
-                wb_log({f"eval/{name}_loss": avg_loss, f"eval/{name}_acc": acc, f"eval/{name}_cm_raw": cm.tolist()}, bump=True)
+                wb_log(
+                    {f"eval/{name}_loss": avg_loss, f"eval/{name}_acc": acc, f"eval/{name}_cm_raw": cm.tolist()},
+                    bump=True,
+                )
             else:
                 print(f"{name}: loss={avg_loss:.4f}")
                 wb_log({f"eval/{name}_loss": avg_loss}, bump=True)
 
             return result
 
-        # Evaluate HQ (NuPlan) and LQ (L2D)
         nup_res = eval_one("nuplan_eval", nup_eval_emb_path, nup_paths["eval_risk_path"])
         l2d_res = eval_one("l2d_eval", l2d_eval_emb_path, l2d_paths["eval_risk_path"])
 
-        # Save evaluation summary alongside checkpoints (4Ba-style: evaluation_results.json in run_dir)
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
-        results = {}
+        results: Dict[str, Any] = {}
         if os.path.exists(eval_results_path):
             try:
                 with open(eval_results_path, "r") as f:
@@ -854,7 +886,6 @@ def run(args: argparse.Namespace) -> None:
         wandb_run.finish()
 
 
-# ------------------------- CLI -------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="4Ca: encoder+projection alignment + risk head from embeddings.")
 
@@ -863,7 +894,7 @@ if __name__ == "__main__":
 
     # Output/run isolation (4Ba-style)
     parser.add_argument("--output_root", type=str, default="./outputs", help="Root dir for per-run outputs (no overwrites).")
-    parser.add_argument("--run_id", type=str, default=None, help="Optional: force a specific run_id (prevents random local-* ids).")
+    parser.add_argument("--run_id", type=str, default=None, help="Optional: force a specific run_id.")
 
     # Encoder stage flags
     parser.add_argument("--train_encoder", action="store_true")
