@@ -1,15 +1,16 @@
-# scripts/4Ca_align_then_risk.py
+# scripts/4Ca_UST-risk.py
 """
 Unified pipeline script: (Encoder+Projection) + (Risk head from embeddings)
 
 Stages (each controlled by flags):
   A) --train_encoder
      Train two autoencoders (L2D, NuPlan) + a shared projection head using:
-        recon_loss(L2D) + recon_loss(NuPlan) + align_weight * ALIGN(proj(L2D_emb), proj(NuPlan_emb))
+        recon_loss(L2D) + recon_loss(NuPlan) + kl_eff(epoch) * KL(proj(L2D_emb), proj(NuPlan_emb))
 
-     ALIGN is now:
-       - MMD (RBF, multi-kernel) between projected embedding sets
-       - with an alignment warmup/ramp schedule (starts at 0)
+     Where kl_eff(epoch) supports warmup+ramp:
+        - epochs 1..align_warmup_epochs:   0
+        - next align_ramp_epochs epochs:  linear ramp to kl_weight
+        - afterwards:                     kl_weight
 
   B) --extract_embeddings
      Extract projected graph embeddings (after ProjectionHead) for:
@@ -34,18 +35,11 @@ This version:
       <output_root>/4Ca/L2D_NuPlan/<classification|regression>/<run_id>/
   - Removes unused --class_thresholds (binning handled by risk_to_class_safe internally)
 
-Fixes for sweeps:
+Fixes for sweeps / wandb agents:
   - Auto-enable W&B when running under wandb agent/sweep (unless wandb_mode == disabled)
   - Ensure risk metrics get logged under sweeps
   - Do NOT require eval embeddings unless Stage D is requested
-
-Key alignment changes:
-  - Replaces per-batch Gaussian KL with MMD (set-to-set alignment)
-  - Removes paired zip-assumption as a *semantic* alignment signal
-  - Adds warmup + linear ramp for alignment weight
-  - Keeps existing args as much as possible:
-      * --kl_weight is still the main alignment coefficient (now applied to MMD)
-      * New args have safe defaults so existing sweep YAML won't break
+  - Robust boolean flags: accepts BOTH `--flag` and `--flag=False` (wandb sometimes passes the latter)
 """
 
 import argparse
@@ -54,7 +48,7 @@ import sys
 import json
 import time
 import uuid
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 import numpy as np
 import torch
@@ -74,6 +68,7 @@ from src.graph_encoding.autoencoder import (
     edge_loss,
     QuantileFeatureQuantizer,
     ProjectionHead,
+    kl_divergence_between_gaussians,
     batched_graph_embeddings,
 )
 from src.graph_encoding.risk_prediction import RiskPredictionHead
@@ -93,6 +88,9 @@ from src.experiment_utils.D_utils import (
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# -------------------------
+# Helpers
+# -------------------------
 def _make_fallback_run_id() -> str:
     return f"local-{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
@@ -103,127 +101,53 @@ def _ensure_dir(path: str) -> str:
 
 
 def _running_under_wandb_agent_or_sweep() -> bool:
-    # Typical env vars set by W&B agents/sweeps.
-    for k in ("WANDB_SWEEP_ID", "WANDB_AGENT_ID"):
+    for k in ("WANDB_SWEEP_ID", "WANDB_AGENT_ID", "WANDB_RUN_ID"):
         if os.environ.get(k):
             return True
-    if os.environ.get("WANDB_RUN_ID"):
-        return True
     return False
 
 
-def _linear_warmup_ramp(epoch_1idx: int, warmup_epochs: int, ramp_epochs: int) -> float:
-    """
-    Returns multiplier in [0,1].
-    - epoch_1idx is 1-based epoch counter
-    - warmup_epochs: multiplier=0 for epochs <= warmup_epochs
-    - ramp_epochs: linearly increases from 0->1 over next ramp_epochs epochs
-    """
-    if warmup_epochs < 0:
-        warmup_epochs = 0
-    if ramp_epochs < 0:
-        ramp_epochs = 0
+def _str2bool(v):
+    # Allows: --flag, --flag=true/false/1/0/yes/no, and wandb's --flag=False
+    if v is None:
+        return True
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off"):
+        return False
+    raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
 
-    if epoch_1idx <= warmup_epochs:
+
+def effective_weight(epoch: int, base: float, warmup: int, ramp: int) -> float:
+    """
+    Warmup+Ramp schedule:
+      - epoch <= warmup  : 0
+      - next ramp epochs : linear to base
+      - else             : base
+    """
+    base = float(base)
+    warmup = int(max(warmup, 0))
+    ramp = int(max(ramp, 0))
+
+    if base <= 0.0:
         return 0.0
-
-    if ramp_epochs == 0:
-        return 1.0
-
-    # ramp starts at epoch = warmup_epochs+1
-    t = epoch_1idx - warmup_epochs
-    # t=1 => small positive; t=ramp_epochs => 1.0
-    frac = float(t) / float(ramp_epochs)
-    return float(max(0.0, min(1.0, frac)))
-
-
-def _pairwise_sq_dists(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """
-    Returns matrix of squared distances between rows of x and y:
-      shape: [xN, yN]
-    """
-    # (x - y)^2 = x^2 + y^2 - 2xy
-    x2 = (x * x).sum(dim=1, keepdim=True)  # [N,1]
-    y2 = (y * y).sum(dim=1, keepdim=True).t()  # [1,M]
-    return x2 + y2 - 2.0 * (x @ y.t())
+    if warmup == 0 and ramp == 0:
+        return base
+    if epoch <= warmup:
+        return 0.0
+    if ramp == 0:
+        return base
+    t = (epoch - warmup) / float(ramp)
+    t = max(0.0, min(1.0, t))
+    return base * t
 
 
-def _compute_mmd_rbf(
-    x: torch.Tensor,
-    y: torch.Tensor,
-    *,
-    num_kernels: int = 3,
-    kernel_mul: float = 2.0,
-    use_median_heuristic: bool = True,
-    fixed_bandwidth: Optional[float] = None,
-    eps: float = 1e-8,
-) -> torch.Tensor:
-    """
-    Multi-kernel RBF MMD^2 between two sets of embeddings.
-    - x: [N,D], y: [M,D]
-    - returns scalar tensor
-    Notes:
-      * Uses a stable, differentiable RBF kernel mixture.
-      * Bandwidth selection:
-          - if fixed_bandwidth is provided: uses it as base sigma^2
-          - else if use_median_heuristic: uses median pairwise dist^2 (detached)
-    """
-    assert x.dim() == 2 and y.dim() == 2, "x and y must be 2D [N,D]"
-    n = x.shape[0]
-    m = y.shape[0]
-    if n < 2 or m < 2:
-        # Degenerate batch: no meaningful MMD
-        return torch.zeros((), device=x.device, dtype=x.dtype)
-
-    # Distances
-    dxx = _pairwise_sq_dists(x, x)
-    dyy = _pairwise_sq_dists(y, y)
-    dxy = _pairwise_sq_dists(x, y)
-
-    if fixed_bandwidth is not None:
-        base = torch.tensor(float(fixed_bandwidth), device=x.device, dtype=x.dtype)
-        base = torch.clamp(base, min=eps)
-    elif use_median_heuristic:
-        # Median heuristic on combined distances (detach to avoid nasty grads through bandwidth)
-        with torch.no_grad():
-            # Combine off-diagonal distances to avoid tons of zeros on diag
-            # (small batches: keep it simple and robust)
-            dx = torch.cat([dxx.flatten(), dyy.flatten(), dxy.flatten()], dim=0)
-            med = torch.median(dx)
-            base = torch.clamp(med, min=eps)
-        base = base.to(device=x.device, dtype=x.dtype)
-    else:
-        base = torch.tensor(1.0, device=x.device, dtype=x.dtype)
-
-    # Build bandwidths (sigma^2 values)
-    # Example num_kernels=3 => [base / mul, base, base * mul]
-    # If num_kernels=1 => [base]
-    if num_kernels <= 1:
-        sigmas = [base]
-    else:
-        mid = (num_kernels - 1) // 2
-        sigmas = []
-        for i in range(num_kernels):
-            power = i - mid
-            sigmas.append(base * (kernel_mul ** power))
-        # ensure positive
-        sigmas = [torch.clamp(s, min=eps) for s in sigmas]
-
-    def k_rbf(dist2: torch.Tensor) -> torch.Tensor:
-        ksum = 0.0
-        for s2 in sigmas:
-            ksum = ksum + torch.exp(-dist2 / (2.0 * s2))
-        return ksum / float(len(sigmas))
-
-    Kxx = k_rbf(dxx)
-    Kyy = k_rbf(dyy)
-    Kxy = k_rbf(dxy)
-
-    # Biased estimator (stable, simple). With small batches the bias is minor.
-    mmd2 = Kxx.mean() + Kyy.mean() - 2.0 * Kxy.mean()
-    return mmd2
-
-
+# -------------------------
+# Main
+# -------------------------
 def run(args: argparse.Namespace) -> None:
     set_seed(args.seed)
 
@@ -251,7 +175,7 @@ def run(args: argparse.Namespace) -> None:
         payload["global_step"] = global_step
         wandb.log(payload)
 
-    # Robust project fallback: CLI > env > None (wandb may still accept via settings)
+    # Robust project fallback: CLI > env
     wandb_project = args.wandb_project or os.environ.get("WANDB_PROJECT")
 
     if args.use_wandb and args.wandb_mode != "disabled":
@@ -389,7 +313,7 @@ def run(args: argparse.Namespace) -> None:
         generator=loader_gen,
     )
 
-    # Drop-last loaders for encoder training (Stage A)
+    # Drop-last loaders for paired training (Stage A)
     l2d_train_loader_drop = DataLoader(l2d_train_ds, shuffle=True, drop_last=True, **common_loader_kwargs)
     nup_train_loader_drop = DataLoader(nup_train_ds, shuffle=True, drop_last=True, **common_loader_kwargs)
     l2d_val_loader_drop = DataLoader(l2d_val_ds, shuffle=False, drop_last=True, **common_loader_kwargs)
@@ -400,7 +324,7 @@ def run(args: argparse.Namespace) -> None:
     nup_train_loader_full = DataLoader(nup_train_full, shuffle=False, drop_last=False, **common_loader_kwargs)
 
     # -------------------------
-    # Build EVAL datasets (kept as your original behavior)
+    # Build EVAL datasets (kept as original behavior)
     # -------------------------
     _require_dir(l2d_paths["eval_graph_root"], "L2D EVAL graphs")
     _require_file(l2d_paths["eval_risk_path"], "L2D EVAL risk JSON")
@@ -476,7 +400,7 @@ def run(args: argparse.Namespace) -> None:
 
     # ------------------------- Stage A: TRAIN ENCODERS + PROJECTION -------------------------
     if args.train_encoder:
-        print("\n=== Stage A: TRAIN ENCODERS + PROJECTION (MMD + warmup/ramp) ===")
+        print("\n=== Stage A: TRAIN ENCODERS + PROJECTION ===")
         enc_opt = torch.optim.Adam(
             list(l2d_enc.parameters()) + list(nup_enc.parameters()) + list(proj_head.parameters()),
             lr=args.lr,
@@ -485,40 +409,24 @@ def run(args: argparse.Namespace) -> None:
 
         best_val = float("inf")
 
-        # We'll do the same number of steps as the shorter loader, but without implying batch pairing semantics.
-        train_steps = min(len(l2d_train_loader_drop), len(nup_train_loader_drop))
-        val_steps = min(len(l2d_val_loader_drop), len(nup_val_loader_drop))
-
         for epoch in range(1, args.num_epochs + 1):
             l2d_enc.train()
             nup_enc.train()
             proj_head.train()
 
-            align_mult = _linear_warmup_ramp(epoch, args.align_warmup_epochs, args.align_ramp_epochs)
-            align_weight_eff = float(args.kl_weight) * align_mult  # keep arg name stable for sweeps
+            kl_w = effective_weight(epoch, args.kl_weight, args.align_warmup_epochs, args.align_ramp_epochs)
 
             total = 0.0
-            align_total = 0.0
+            kl_total = 0.0
             l2d_recon_total = 0.0
             nup_recon_total = 0.0
             n_batches = 0
 
-            it_l2d = iter(l2d_train_loader_drop)
-            it_nup = iter(nup_train_loader_drop)
-
-            for _ in tqdm(range(train_steps), desc=f"Epoch {epoch:02d} [train_enc]"):
-                try:
-                    l2d_batch = next(it_l2d)
-                except StopIteration:
-                    it_l2d = iter(l2d_train_loader_drop)
-                    l2d_batch = next(it_l2d)
-
-                try:
-                    nup_batch = next(it_nup)
-                except StopIteration:
-                    it_nup = iter(nup_train_loader_drop)
-                    nup_batch = next(it_nup)
-
+            for l2d_batch, nup_batch in tqdm(
+                zip(l2d_train_loader_drop, nup_train_loader_drop),
+                total=min(len(l2d_train_loader_drop), len(nup_train_loader_drop)),
+                desc=f"Epoch {epoch:02d} [train_enc]",
+            ):
                 enc_opt.zero_grad()
 
                 l2d_batch = l2d_quant.transform_inplace(l2d_batch).to(device)
@@ -544,27 +452,20 @@ def run(args: argparse.Namespace) -> None:
                 l2d_p = proj_head(l2d_g)
                 nup_p = proj_head(nup_g)
 
-                align = _compute_mmd_rbf(
-                    l2d_p,
-                    nup_p,
-                    num_kernels=args.mmd_num_kernels,
-                    kernel_mul=args.mmd_kernel_mul,
-                    use_median_heuristic=bool(args.mmd_use_median),
-                    fixed_bandwidth=args.mmd_fixed_bandwidth,
-                )
+                kl = kl_divergence_between_gaussians(l2d_p, nup_p)
+                loss = l2d_recon + nup_recon + kl_w * kl
 
-                loss = l2d_recon + nup_recon + (align_weight_eff * align)
                 loss.backward()
                 enc_opt.step()
 
                 total += float(loss.item())
-                align_total += float(align.item())
+                kl_total += float(kl.item())
                 l2d_recon_total += float(l2d_recon.item())
                 nup_recon_total += float(nup_recon.item())
                 n_batches += 1
 
             train_loss = total / max(n_batches, 1)
-            train_align = align_total / max(n_batches, 1)
+            train_kl = kl_total / max(n_batches, 1)
             train_l2d_recon = l2d_recon_total / max(n_batches, 1)
             train_nup_recon = nup_recon_total / max(n_batches, 1)
 
@@ -574,28 +475,17 @@ def run(args: argparse.Namespace) -> None:
             proj_head.eval()
 
             v_total = 0.0
-            v_align = 0.0
+            v_kl = 0.0
             v_l2d_recon = 0.0
             v_nup_recon = 0.0
             v_batches = 0
 
-            it_l2d = iter(l2d_val_loader_drop)
-            it_nup = iter(nup_val_loader_drop)
-
             with torch.no_grad():
-                for _ in tqdm(range(val_steps), desc=f"Epoch {epoch:02d} [val_enc]"):
-                    try:
-                        l2d_batch = next(it_l2d)
-                    except StopIteration:
-                        it_l2d = iter(l2d_val_loader_drop)
-                        l2d_batch = next(it_l2d)
-
-                    try:
-                        nup_batch = next(it_nup)
-                    except StopIteration:
-                        it_nup = iter(nup_val_loader_drop)
-                        nup_batch = next(it_nup)
-
+                for l2d_batch, nup_batch in tqdm(
+                    zip(l2d_val_loader_drop, nup_val_loader_drop),
+                    total=min(len(l2d_val_loader_drop), len(nup_val_loader_drop)),
+                    desc=f"Epoch {epoch:02d} [val_enc]",
+                ):
                     l2d_batch = l2d_quant.transform_inplace(l2d_batch).to(device)
                     nup_batch = nup_quant.transform_inplace(nup_batch).to(device)
 
@@ -619,49 +509,35 @@ def run(args: argparse.Namespace) -> None:
                     l2d_p = proj_head(l2d_g)
                     nup_p = proj_head(nup_g)
 
-                    align = _compute_mmd_rbf(
-                        l2d_p,
-                        nup_p,
-                        num_kernels=args.mmd_num_kernels,
-                        kernel_mul=args.mmd_kernel_mul,
-                        use_median_heuristic=bool(args.mmd_use_median),
-                        fixed_bandwidth=args.mmd_fixed_bandwidth,
-                    )
-
-                    loss = l2d_recon + nup_recon + (align_weight_eff * align)
+                    kl = kl_divergence_between_gaussians(l2d_p, nup_p)
+                    loss = l2d_recon + nup_recon + kl_w * kl
 
                     v_total += float(loss.item())
-                    v_align += float(align.item())
+                    v_kl += float(kl.item())
                     v_l2d_recon += float(l2d_recon.item())
                     v_nup_recon += float(nup_recon.item())
                     v_batches += 1
 
             val_loss = v_total / max(v_batches, 1)
-            val_align = v_align / max(v_batches, 1)
+            val_kl = v_kl / max(v_batches, 1)
             val_l2d_recon = v_l2d_recon / max(v_batches, 1)
             val_nup_recon = v_nup_recon / max(v_batches, 1)
 
             print(
                 f"Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f} "
-                f"| align_w={align_weight_eff:.6g} | val_mmd={val_align:.6g} "
-                f"| val_l2d_recon={val_l2d_recon:.4f} | val_nuplan_recon={val_nup_recon:.4f}"
+                f"| kl_w={kl_w:.6f} | val_kl={val_kl:.4f} | val_l2d_recon={val_l2d_recon:.4f} | val_nuplan_recon={val_nup_recon:.4f}"
             )
 
-            # Keep legacy naming too (enc/*_kl) so existing dashboards don't explode.
             wb_log(
                 {
                     "enc/epoch": epoch,
-                    "enc/align_weight_eff": align_weight_eff,
-
+                    "enc/kl_w": kl_w,
                     "enc/train_loss": train_loss,
-                    "enc/train_align": train_align,
-                    "enc/train_kl": train_align,  # legacy alias
+                    "enc/train_kl": train_kl,
                     "enc/train_l2d_recon": train_l2d_recon,
                     "enc/train_nuplan_recon": train_nup_recon,
-
                     "enc/val_loss": val_loss,
-                    "enc/val_align": val_align,
-                    "enc/val_kl": val_align,  # legacy alias
+                    "enc/val_kl": val_kl,
                     "enc/val_l2d_recon": val_l2d_recon,
                     "enc/val_nuplan_recon": val_nup_recon,
                 },
@@ -677,6 +553,7 @@ def run(args: argparse.Namespace) -> None:
                         "nuplan_encoder": nup_enc.state_dict(),
                         "projection_head": proj_head.state_dict(),
                         "graph_emb_dim": graph_emb_dim,
+                        "best_val_loss": best_val,
                         "args": dict(vars(args)),
                         "run_dir": run_dir,
                     },
@@ -824,7 +701,7 @@ def run(args: argparse.Namespace) -> None:
     l2d_eval_emb_path = os.path.join(args.embedding_dir, "l2d_eval_proj_embeddings.pt")
     nup_eval_emb_path = os.path.join(args.embedding_dir, "nuplan_eval_proj_embeddings.pt")
 
-    # FIX: only require what’s actually needed
+    # Only require what’s actually needed
     if args.train_risk:
         _require_file(
             nup_train_emb_path,
@@ -1060,6 +937,7 @@ def run(args: argparse.Namespace) -> None:
         wandb_run.finish()
 
 
+# ------------------------- CLI -------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="4Ca: encoder+projection alignment + risk head from embeddings.")
 
@@ -1070,20 +948,20 @@ if __name__ == "__main__":
     parser.add_argument("--output_root", type=str, default="./outputs", help="Root dir for per-run outputs (no overwrites).")
     parser.add_argument("--run_id", type=str, default=None, help="Optional: force a specific run_id.")
 
-    # Encoder stage flags
-    parser.add_argument("--train_encoder", action="store_true")
+    # Stage flags (robust booleans: allow --flag and --flag=False)
+    parser.add_argument("--train_encoder", type=_str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--extract_embeddings", type=_str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--train_risk", type=_str2bool, nargs="?", const=True, default=False)
+    parser.add_argument("--evaluate_risk", type=_str2bool, nargs="?", const=True, default=False)
+
+    # Dataset/task
     parser.add_argument("--mode", type=str, default="all")
     parser.add_argument("--side_info_path", type=str, default=None)
     parser.add_argument("--node_features_to_exclude", nargs="+", type=str, default=None)
 
     # Embedding extraction
-    parser.add_argument("--extract_embeddings", action="store_true")
     parser.add_argument("--embed_split", type=str, default="both", choices=["train", "eval", "both"])
     parser.add_argument("--embedding_dir", type=str, default="./data/graph_embeddings/")
-
-    # Risk head stage flags
-    parser.add_argument("--train_risk", action="store_true")
-    parser.add_argument("--evaluate_risk", action="store_true")
 
     # Encoder model hyperparams
     parser.add_argument("--quant_bins", type=int, default=32)
@@ -1098,19 +976,11 @@ if __name__ == "__main__":
     # Encoder optimizer
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
-
-    # NOTE: keep arg name stable for sweeps; it's now the ALIGN (MMD) coefficient.
     parser.add_argument("--kl_weight", type=float, default=0.1)
 
-    # Alignment warmup/ramp (NEW, safe defaults => old behavior)
-    parser.add_argument("--align_warmup_epochs", type=int, default=0, help="Epochs with align weight = 0.")
-    parser.add_argument("--align_ramp_epochs", type=int, default=0, help="Linear ramp epochs from 0 to full weight.")
-
-    # MMD settings (NEW, safe defaults)
-    parser.add_argument("--mmd_num_kernels", type=int, default=3, help="Number of RBF kernels in mixture.")
-    parser.add_argument("--mmd_kernel_mul", type=float, default=2.0, help="Geometric spacing factor for kernel bandwidths.")
-    parser.add_argument("--mmd_use_median", action="store_true", default=True, help="Use median heuristic for bandwidth base.")
-    parser.add_argument("--mmd_fixed_bandwidth", type=float, default=None, help="If set, overrides median heuristic (bandwidth base in dist^2 units).")
+    # ✅ NEW: KL warmup/ramp (so your sweep YAML can pass them)
+    parser.add_argument("--align_warmup_epochs", type=int, default=0)
+    parser.add_argument("--align_ramp_epochs", type=int, default=0)
 
     # Risk head hyperparams
     parser.add_argument("--prediction_mode", type=str, default="regression", choices=["regression", "classification"])
@@ -1123,7 +993,7 @@ if __name__ == "__main__":
     # Loader + splitting
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--pin_memory", action="store_true", default=False)
+    parser.add_argument("--pin_memory", type=_str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--val_fraction", type=float, default=0.1)
     parser.add_argument("--num_epochs", type=int, default=5)
 
@@ -1134,8 +1004,8 @@ if __name__ == "__main__":
     # Misc
     parser.add_argument("--seed", type=int, default=42)
 
-    # wandb
-    parser.add_argument("--use_wandb", action="store_true", default=False)
+    # wandb (robust boolean)
+    parser.add_argument("--use_wandb", type=_str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_run_name", type=str, default=None)
