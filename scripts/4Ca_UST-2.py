@@ -13,7 +13,10 @@ Stages (each controlled by flags):
         - afterwards:                     kl_weight
 
   B) --extract_embeddings
-     Extract projected graph embeddings (after ProjectionHead) for:
+     Extract BOTH:
+        - encoder graph embeddings (g)  [used for risk by default]
+        - projected embeddings (p)      [saved for debugging/analysis]
+     for:
         - TRAIN split: data/training_data/<DATASET>/graphs
         - EVAL  split: data/evaluation_data/<DATASET>/graphs
      and save to args.embedding_dir with predictable filenames.
@@ -28,18 +31,16 @@ Stages (each controlled by flags):
         - L2D   EVAL embeddings
      Logs loss (+ accuracy/confusion matrix for classification).
 
-This version:
-  - Implements Stage D
-  - Fixes L2D eval metadata bug in embedding extraction
-  - Adds 4Ba-style run isolation + checkpoint naming under:
-      <output_root>/4Ca/L2D_NuPlan/<classification|regression>/<run_id>/
-  - Removes unused --class_thresholds (binning handled by risk_to_class_safe internally)
+Key change (the idea you want):
+  - Alignment happens ONLY in projection space (proj_head(g)) for KL.
+  - Risk is trained/evaluated on ENCODER embeddings g by default.
+    (controlled by --risk_embedding_type, default "enc")
 
 Fixes for sweeps / wandb agents:
   - Auto-enable W&B when running under wandb agent/sweep (unless wandb_mode == disabled)
   - Ensure risk metrics get logged under sweeps
   - Do NOT require eval embeddings unless Stage D is requested
-  - Robust boolean flags: accepts BOTH `--flag` and `--flag=False` (wandb sometimes passes the latter)
+  - Robust boolean flags: accepts BOTH `--flag` and `--flag=False`
 """
 
 import argparse
@@ -48,7 +49,7 @@ import sys
 import json
 import time
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 import numpy as np
 import torch
@@ -145,6 +146,15 @@ def effective_weight(epoch: int, base: float, warmup: int, ramp: int) -> float:
     return base * t
 
 
+def _embedding_paths(embedding_dir: str, dataset_name: str, split_name: str):
+    # Always save both for compatibility and debugging
+    base = os.path.join(embedding_dir, f"{dataset_name.lower()}_{split_name}")
+    return {
+        "enc":  base + "_enc_embeddings.pt",
+        "proj": base + "_proj_embeddings.pt",
+    }
+
+
 # -------------------------
 # Main
 # -------------------------
@@ -164,18 +174,14 @@ def run(args: argparse.Namespace) -> None:
     def wb_log(payload: Dict[str, Any], bump: bool = False):
         """Logs to W&B using a single global_step."""
         nonlocal global_step
-
-        # Log if wandb is active either via wandb_run or wandb.run (agent-managed)
         if (wandb_run is None) and (wandb.run is None):
             return
-
         if bump:
             global_step += 1
         payload = dict(payload)
         payload["global_step"] = global_step
         wandb.log(payload)
 
-    # Robust project fallback: CLI > env
     wandb_project = args.wandb_project or os.environ.get("WANDB_PROJECT")
 
     if args.use_wandb and args.wandb_mode != "disabled":
@@ -187,7 +193,6 @@ def run(args: argparse.Namespace) -> None:
             mode=args.wandb_mode,
             config=vars(args),
         )
-
         # allow sweep overrides
         for k, v in wandb.config.items():
             if hasattr(args, k):
@@ -195,6 +200,9 @@ def run(args: argparse.Namespace) -> None:
 
         wandb.define_metric("global_step")
         wandb.define_metric("*", step_metric="global_step")
+
+        # Make it explicit in the run config
+        wandb.config.update({"risk_embedding_type": args.risk_embedding_type}, allow_val_change=True)
 
     # -------------------------
     # 4Ba-style run isolation / naming
@@ -219,7 +227,6 @@ def run(args: argparse.Namespace) -> None:
         output_root = _ensure_dir(os.path.abspath(args.output_root))
         run_dir = _ensure_dir(os.path.join(output_root, "4Ca", "L2D_NuPlan", pred_dir, run_id))
 
-        # Rewrite default ckpt paths into run_dir (4Ba-style)
         if os.path.basename(args.encoder_ckpt_path) == "best_model.pt":
             args.encoder_ckpt_path = os.path.join(run_dir, "4Ca_L2D_NuPlan_enc_best_model.pt")
         else:
@@ -230,7 +237,6 @@ def run(args: argparse.Namespace) -> None:
         else:
             args.risk_ckpt_path = os.path.abspath(args.risk_ckpt_path)
 
-        # Put embeddings under run_dir by default (prevents sweep collisions)
         default_embed_dir_1 = "./data/graph_embeddings/"
         default_embed_dir_2 = "./data/graph_embeddings"
         if args.embedding_dir in (default_embed_dir_1, default_embed_dir_2):
@@ -324,7 +330,7 @@ def run(args: argparse.Namespace) -> None:
     nup_train_loader_full = DataLoader(nup_train_full, shuffle=False, drop_last=False, **common_loader_kwargs)
 
     # -------------------------
-    # Build EVAL datasets (kept as original behavior)
+    # Build EVAL datasets
     # -------------------------
     _require_dir(l2d_paths["eval_graph_root"], "L2D EVAL graphs")
     _require_file(l2d_paths["eval_risk_path"], "L2D EVAL risk JSON")
@@ -442,6 +448,7 @@ def run(args: argparse.Namespace) -> None:
                     nup_edge_logits, nup_z, nup_enc.edge_decoders
                 )
 
+                # encoder graph embeddings
                 l2d_g = batched_graph_embeddings(
                     l2d_z, l2d_batch, l2d_train_full.get_metadata(), embed_dim_per_type=args.embed_dim
                 )
@@ -449,6 +456,7 @@ def run(args: argparse.Namespace) -> None:
                     nup_z, nup_batch, nup_train_full.get_metadata(), embed_dim_per_type=args.embed_dim
                 )
 
+                # alignment only in projection space
                 l2d_p = proj_head(l2d_g)
                 nup_p = proj_head(nup_g)
 
@@ -581,36 +589,47 @@ def run(args: argparse.Namespace) -> None:
         metadata,
         split_name: str,
         out_dir: str,
-    ) -> str:
+    ) -> Dict[str, str]:
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{dataset_name.lower()}_{split_name}_proj_embeddings.pt")
+        paths = _embedding_paths(out_dir, dataset_name, split_name)
+        out_enc = paths["enc"]
+        out_proj = paths["proj"]
 
-        embs: Dict[str, torch.Tensor] = {}
+        enc_embs: Dict[str, torch.Tensor] = {}
+        proj_embs: Dict[str, torch.Tensor] = {}
+
         with torch.no_grad():
             for batch in tqdm(loader, desc=f"Extract [{dataset_name}:{split_name}]"):
                 batch = quantizer.transform_inplace(batch).to(device)
                 z, _, _ = encoder(batch)
+
                 g = batched_graph_embeddings(z, batch, metadata, embed_dim_per_type=args.embed_dim)
                 p = proj_head(g)
 
                 ids = episode_ids_from_batch(batch)
                 for i, eid in enumerate(ids):
-                    embs[eid] = p[i].detach().cpu()
+                    enc_embs[eid] = g[i].detach().cpu()
+                    proj_embs[eid] = p[i].detach().cpu()
 
-        torch.save(embs, out_path)
-        print(f"[ok] saved {dataset_name} {split_name} embeddings -> {out_path}")
+        torch.save(enc_embs, out_enc)
+        torch.save(proj_embs, out_proj)
+
+        print(f"[ok] saved {dataset_name} {split_name} ENC  embeddings -> {out_enc}")
+        print(f"[ok] saved {dataset_name} {split_name} PROJ embeddings -> {out_proj}")
 
         wb_log(
             {
                 "embeddings/saved": 1,
                 "embeddings/dataset": dataset_name,
                 "embeddings/split": split_name,
-                "embeddings/num_ids": len(embs),
+                "embeddings/num_ids": len(enc_embs),
+                "embeddings/saved_enc_path": os.path.basename(out_enc),
+                "embeddings/saved_proj_path": os.path.basename(out_proj),
             },
             bump=True,
         )
 
-        return out_path
+        return paths
 
     if args.extract_embeddings:
         print("\n=== Stage B: EXTRACT EMBEDDINGS ===")
@@ -634,7 +653,6 @@ def run(args: argparse.Namespace) -> None:
                 args.embedding_dir,
             )
         if args.embed_split in ("eval", "both"):
-            # FIX: use eval metadata for eval extraction
             extract_and_save_embeddings(
                 "L2D",
                 l2d_eval_loader,
@@ -697,30 +715,36 @@ def run(args: argparse.Namespace) -> None:
         def __getitem__(self, idx: int):
             return self.X[idx], self.y[idx]
 
-    nup_train_emb_path = os.path.join(args.embedding_dir, "nuplan_train_proj_embeddings.pt")
-    l2d_eval_emb_path = os.path.join(args.embedding_dir, "l2d_eval_proj_embeddings.pt")
-    nup_eval_emb_path = os.path.join(args.embedding_dir, "nuplan_eval_proj_embeddings.pt")
+    # choose embedding files
+    nup_train_paths = _embedding_paths(args.embedding_dir, "NuPlan", "train")
+    nup_eval_paths = _embedding_paths(args.embedding_dir, "NuPlan", "eval")
+    l2d_eval_paths = _embedding_paths(args.embedding_dir, "L2D", "eval")
+
+    emb_type = args.risk_embedding_type  # "enc" or "proj"
+    nup_train_emb_path = nup_train_paths[emb_type]
+    nup_eval_emb_path = nup_eval_paths[emb_type]
+    l2d_eval_emb_path = l2d_eval_paths[emb_type]
 
     # Only require what’s actually needed
     if args.train_risk:
         _require_file(
             nup_train_emb_path,
-            "NuPlan TRAIN embeddings (expected from --extract_embeddings --embed_split train/both)",
+            f"NuPlan TRAIN embeddings ({emb_type}) expected from --extract_embeddings --embed_split train/both",
         )
 
     if args.evaluate_risk:
         _require_file(
             nup_eval_emb_path,
-            "NuPlan EVAL embeddings (expected from --extract_embeddings --embed_split eval/both)",
+            f"NuPlan EVAL embeddings ({emb_type}) expected from --extract_embeddings --embed_split eval/both",
         )
         _require_file(
             l2d_eval_emb_path,
-            "L2D EVAL embeddings (expected from --extract_embeddings --embed_split eval/both)",
+            f"L2D EVAL embeddings ({emb_type}) expected from --extract_embeddings --embed_split eval/both",
         )
 
     # ------------------------- Stage C: TRAIN RISK HEAD -------------------------
     if args.train_risk:
-        print("\n=== Stage C: TRAIN RISK HEAD (from embeddings) ===")
+        print(f"\n=== Stage C: TRAIN RISK HEAD (from embeddings: {emb_type}) ===")
 
         nup_train_embs = load_embeddings(nup_train_emb_path)
         X, y = build_embedding_dataset(nup_train_embs, nup_paths["train_risk_path"], args.prediction_mode)
@@ -807,15 +831,14 @@ def run(args: argparse.Namespace) -> None:
             else:
                 print(f"Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
 
-            # Sweep-critical metrics
             payload = {
                 "risk/epoch": epoch,
+                "risk/embedding_type": emb_type,
                 "risk/train_loss": train_loss,
                 "risk/val_loss": val_loss,
             }
             if args.prediction_mode == "classification":
                 payload.update({"risk/train_acc": train_acc, "risk/val_acc": val_acc})
-
             wb_log(payload, bump=True)
 
             if val_loss < best:
@@ -829,6 +852,7 @@ def run(args: argparse.Namespace) -> None:
                         "prediction_mode": args.prediction_mode,
                         "num_classes": int(args.num_classes),
                         "best_val_loss": best,
+                        "risk_embedding_type": emb_type,
                         "args": dict(vars(args)),
                         "run_dir": run_dir,
                     },
@@ -838,7 +862,7 @@ def run(args: argparse.Namespace) -> None:
 
     # ------------------------- Stage D: EVALUATE RISK HEAD -------------------------
     if args.evaluate_risk:
-        print("\n=== Stage D: EVALUATE RISK HEAD ===")
+        print(f"\n=== Stage D: EVALUATE RISK HEAD (embeddings: {emb_type}) ===")
         _require_file(args.risk_ckpt_path, "Risk checkpoint (--risk_ckpt_path)")
 
         ck = torch.load(args.risk_ckpt_path, map_location=device, weights_only=False)
@@ -893,7 +917,7 @@ def run(args: argparse.Namespace) -> None:
 
             avg_loss = total / max(len(dl), 1)
 
-            result: Dict[str, Any] = {"loss": avg_loss}
+            result: Dict[str, Any] = {"loss": avg_loss, "embedding_type": emb_type}
             if args.prediction_mode == "classification":
                 acc = correct / max(seen, 1)
                 result["acc"] = acc
@@ -927,6 +951,7 @@ def run(args: argparse.Namespace) -> None:
         results["4Ca"]["risk_ckpt_path"] = os.path.abspath(args.risk_ckpt_path)
         results["4Ca"]["encoder_ckpt_path"] = os.path.abspath(args.encoder_ckpt_path)
         results["4Ca"]["embedding_dir"] = os.path.abspath(args.embedding_dir)
+        results["4Ca"]["risk_embedding_type"] = emb_type
 
         with open(eval_results_path, "w") as f:
             json.dump(results, f, indent=2)
@@ -944,7 +969,7 @@ if __name__ == "__main__":
     # Data root
     parser.add_argument("--data_root", type=str, default="data")
 
-    # Output/run isolation (4Ba-style)
+    # Output/run isolation
     parser.add_argument("--output_root", type=str, default="./outputs", help="Root dir for per-run outputs (no overwrites).")
     parser.add_argument("--run_id", type=str, default=None, help="Optional: force a specific run_id.")
 
@@ -963,6 +988,10 @@ if __name__ == "__main__":
     parser.add_argument("--embed_split", type=str, default="both", choices=["train", "eval", "both"])
     parser.add_argument("--embedding_dir", type=str, default="./data/graph_embeddings/")
 
+    # ✅ New, but optional (defaults so sweeps need not change)
+    parser.add_argument("--risk_embedding_type", type=str, default="enc", choices=["enc", "proj"],
+                        help="Which embeddings to use for risk head. enc=encoder g (default), proj=projection p.")
+
     # Encoder model hyperparams
     parser.add_argument("--quant_bins", type=int, default=32)
     parser.add_argument("--hidden_dim", type=int, default=64)
@@ -978,7 +1007,7 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--kl_weight", type=float, default=0.1)
 
-    # ✅ NEW: KL warmup/ramp (so your sweep YAML can pass them)
+    # KL warmup/ramp
     parser.add_argument("--align_warmup_epochs", type=int, default=0)
     parser.add_argument("--align_ramp_epochs", type=int, default=0)
 
@@ -997,7 +1026,7 @@ if __name__ == "__main__":
     parser.add_argument("--val_fraction", type=float, default=0.1)
     parser.add_argument("--num_epochs", type=int, default=5)
 
-    # Paths / checkpoints (rewritten into run_dir if left as defaults)
+    # Paths / checkpoints
     parser.add_argument("--encoder_ckpt_path", type=str, default="./models/graph_encoder/best_model.pt")
     parser.add_argument("--risk_ckpt_path", type=str, default="./models/risk_from_embeddings/best_model.pt")
 
