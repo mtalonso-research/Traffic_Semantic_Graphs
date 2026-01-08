@@ -1,19 +1,13 @@
-import argparse
 import os
 import sys
-import json
+import time
+import uuid
 import yaml
 import random
 from typing import Dict, Any
 
 import numpy as np
 import torch
-import torch.nn as nn
-from tqdm import tqdm
-from torch.utils.data import random_split
-from torch_geometric.loader import DataLoader
-
-import wandb
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.graph_encoding.autoencoder import batched_graph_embeddings
@@ -158,3 +152,66 @@ def _format_confusion_matrix(cm):
         row = " ".join([f"{cm[i, j]:>6d}" for j in range(n)])
         lines.append(f"{i:>9d} | {row}")
     return "\n".join(lines)
+
+
+# -----------------------------
+# helpers
+# -----------------------------
+def _make_fallback_run_id() -> str:
+    # Safe unique ID even without wandb: timestamp + pid + random suffix
+    return f"local-{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
+def _ensure_dir(path: str) -> str:
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def safe_div(a: float, b: float) -> float:
+    return float(a / b) if b != 0 else 0.0
+
+
+def classification_metrics_from_cm(cm: np.ndarray) -> Dict[str, Any]:
+    K = cm.shape[0]
+    support = cm.sum(axis=1).astype(np.float64)
+    pred_count = cm.sum(axis=0).astype(np.float64)
+
+    tp = np.diag(cm).astype(np.float64)
+    fn = support - tp
+    fp = pred_count - tp
+
+    precision = np.array([safe_div(tp[k], tp[k] + fp[k]) for k in range(K)], dtype=np.float64)
+    recall = np.array([safe_div(tp[k], tp[k] + fn[k]) for k in range(K)], dtype=np.float64)
+    f1 = np.array([safe_div(2 * precision[k] * recall[k], precision[k] + recall[k]) for k in range(K)], dtype=np.float64)
+
+    total = float(cm.sum())
+    acc = safe_div(tp.sum(), total)
+
+    macro_precision = float(np.mean(precision)) if K else 0.0
+    macro_recall = float(np.mean(recall)) if K else 0.0
+    macro_f1 = float(np.mean(f1)) if K else 0.0
+
+    weights = support / total if total > 0 else np.zeros_like(support)
+    weighted_precision = float(np.sum(weights * precision))
+    weighted_recall = float(np.sum(weights * recall))
+    weighted_f1 = float(np.sum(weights * f1))
+
+    balanced_acc = macro_recall
+    micro_f1 = acc  # single-label multiclass
+
+    return {
+        "accuracy": acc,
+        "micro_f1": micro_f1,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "weighted_precision": weighted_precision,
+        "weighted_recall": weighted_recall,
+        "weighted_f1": weighted_f1,
+        "balanced_accuracy": balanced_acc,
+        "per_class_precision": precision.tolist(),
+        "per_class_recall": recall.tolist(),
+        "per_class_f1": f1.tolist(),
+        "support_per_class": support.astype(int).tolist(),
+        "confusion_matrix": cm.tolist(),
+    }

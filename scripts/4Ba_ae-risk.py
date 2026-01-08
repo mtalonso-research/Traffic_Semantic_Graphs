@@ -3,8 +3,6 @@ import argparse
 import os
 import sys
 import json
-import time
-import uuid
 from typing import Dict, Any
 
 import numpy as np
@@ -13,6 +11,14 @@ import torch.nn as nn
 from tqdm import tqdm
 from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
+from sklearn.metrics import (
+    mean_absolute_error,
+    cohen_kappa_score,
+    mean_squared_error,
+    r2_score,
+    confusion_matrix,
+)
+from scipy.stats import spearmanr
 
 import wandb
 
@@ -39,29 +45,37 @@ from src.experiment_utils.B_utils import (
     _print_access,
     _require_dir,
     _require_file,
+    _make_fallback_run_id,
+    _ensure_dir,
+    classification_metrics_from_cm,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _make_fallback_run_id() -> str:
-    # Safe unique ID even without wandb: timestamp + pid + random suffix
-    return f"local-{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-
-
-def _ensure_dir(path: str) -> str:
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _stem_no_ext(path: str) -> str:
-    base = os.path.basename(path)
-    if base.endswith(".pt"):
-        return base[:-3]
-    return os.path.splitext(base)[0]
-
-
 def run_task(args: argparse.Namespace) -> None:
+    # If in evaluation-only mode, load args from the checkpoint to ensure model compatibility.
+    is_eval_only_flag = bool(args.evaluate) and not bool(args.train_autoencoder) and not bool(args.train_risk)
+    if is_eval_only_flag:
+        original_best_model_path = args.best_model_path
+        original_wandb = args.wandb
+        _require_file(original_best_model_path, "Checkpoint (--best_model_path) for evaluation")
+        ckpt = torch.load(original_best_model_path, map_location="cpu", weights_only=False)
+        if "args" in ckpt:
+            print("[info] Overwriting CLI args with args from checkpoint for model compatibility.")
+            saved_args_dict = ckpt["args"]
+            for k, v in saved_args_dict.items():
+                if hasattr(args, k):
+                    setattr(args, k, v)
+            # Restore essential CLI args that should not be overwritten by the checkpoint's args
+            args.evaluate = True
+            args.train_autoencoder = False
+            args.train_risk = False
+            args.best_model_path = original_best_model_path
+            args.wandb = original_wandb
+        else:
+            print("[warn] Checkpoint does not contain 'args' dictionary. Using CLI args, which may lead to errors.")
+
     # ---------------- W&B init ----------------
     wandb_run = None
     run_id = None
@@ -91,10 +105,6 @@ def run_task(args: argparse.Namespace) -> None:
     side_info_str = "_with_side_info" if args.with_side_information else ""
     pred_tag = "_class" if args.prediction_mode == "classification" else "_reg"
 
-    # ---------------- OUTPUT ISOLATION (NO OVERWRITES) ----------------
-    # All artifacts go under:
-    #   <output_root>/4Ba/<dataset>/<class|reg>/<run_id>/
-    # This guarantees parallel sweep runs do not collide.
     # ---------------- OUTPUT ISOLATION (NO OVERWRITES) ----------------
     # Two modes:
     #  - Training mode: create a fresh per-run directory under output_root using run_id.
@@ -469,13 +479,9 @@ def run_task(args: argparse.Namespace) -> None:
             worker_init_fn=seed_worker if args.num_workers > 0 else None,
         )
 
-        total = 0.0
-        n = 0
-        correct = 0
-        seen = 0
-
-        num_classes = int(args.num_classes)
-        cm = np.zeros((num_classes, num_classes), dtype=np.int64) if args.prediction_mode == "classification" else None
+        y_true_all, y_pred_all = [], []
+        total_loss = 0.0
+        n_batches = 0
 
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc=f"[eval:{dataset_name}]"):
@@ -484,38 +490,64 @@ def run_task(args: argparse.Namespace) -> None:
 
                 if args.prediction_mode == "regression":
                     target = batch.y.view(-1, 1).float()
-                    total += float(risk_loss_fn(pred, target).item())
+                    loss = risk_loss_fn(pred, target)
+                    y_true_all.append(target.cpu().numpy())
+                    y_pred_all.append(pred.cpu().numpy())
                 else:
                     target = risk_to_class_safe(batch.y)
-                    total += float(risk_loss_fn(pred, target).item())
+                    loss = risk_loss_fn(pred, target)
                     pred_cls = torch.argmax(pred, dim=-1)
-                    correct += int((pred_cls == target).sum().item())
-                    seen += int(target.numel())
+                    y_true_all.append(target.cpu().numpy())
+                    y_pred_all.append(pred_cls.cpu().numpy())
 
-                    t = target.detach().cpu().numpy().astype(np.int64)
-                    p = pred_cls.detach().cpu().numpy().astype(np.int64)
-                    for ti, pi in zip(t, p):
-                        if 0 <= ti < num_classes and 0 <= pi < num_classes:
-                            cm[ti, pi] += 1
-                n += 1
+                total_loss += float(loss.item())
+                n_batches += 1
 
-        avg_loss = total / max(n, 1)
+        avg_loss = total_loss / max(n_batches, 1)
 
+        y_true_np = np.concatenate(y_true_all)
+        y_pred_np = np.concatenate(y_pred_all)
+
+        metrics = {"eval/loss": avg_loss}
         if args.prediction_mode == "classification":
-            eval_acc = correct / max(seen, 1)
-            print(f"{dataset_name} evaluation avg loss: {avg_loss:.4f} | eval_acc: {eval_acc:.4f}")
-            print("\nConfusion matrix (rows=true, cols=pred):")
-            print(_format_confusion_matrix(cm))
+            cm = confusion_matrix(y_true_np, y_pred_np, labels=range(args.num_classes))
+            cls_metrics = classification_metrics_from_cm(cm)
 
-            if wandb_run is not None:
-                wandb.log({"eval/loss": avg_loss, "eval/acc": eval_acc, "eval/confusion_matrix_raw": cm.tolist()})
+            cls_metrics["ordinal_mae_bins"] = mean_absolute_error(y_true_np, y_pred_np)
+            cls_metrics["qwk"] = cohen_kappa_score(y_true_np, y_pred_np, weights='quadratic')
+
+            metrics.update(cls_metrics)
+
+            # remove confusion matrix from metrics to print it separately
+            cm_list = metrics.pop("confusion_matrix")
+
+            print(f"\n========== {dataset_name} evaluation results ==========")
+            for k, v in sorted(metrics.items()):
+                 if isinstance(v, list):
+                    print(f"{k}: {v}")
+                 else:
+                    print(f"{k}: {v:.4f}")
+
+            print("\nConfusion matrix (rows=true, cols=pred):")
+            print(_format_confusion_matrix(np.array(cm_list)))
+            print("===============================================\n")
+
         else:
+            metrics["eval/mae"] = mean_absolute_error(y_true_np, y_pred_np)
+            metrics["eval/rmse"] = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
+            metrics["eval/r2"] = r2_score(y_true_np, y_pred_np)
+            rho, p = spearmanr(y_true_np, y_pred_np)
+            metrics["eval/spearman_rho"] = rho
+            metrics["eval/spearman_p"] = p
+
             print(f"{dataset_name} evaluation avg loss: {avg_loss:.4f}")
-            if wandb_run is not None:
-                wandb.log({"eval/loss": avg_loss})
+            for k, v in metrics.items():
+                print(f"{k}: {v:.4f}")
+
+        if wandb_run is not None:
+            wandb.log(metrics)
 
         if args.save_annotations:
-            # Save into run_dir to avoid collisions across sweep runs.
             results = {}
             if os.path.exists(eval_results_path):
                 with open(eval_results_path, "r") as f:
@@ -527,13 +559,13 @@ def run_task(args: argparse.Namespace) -> None:
                 if (args.l2d and args.with_side_information)
                 else ("L2D_without_side_info" if args.l2d else "NuPlan")
             )
+
+            # Update results with all new metrics
             results["4Ba"][key] = avg_loss
             results["4Ba"][key + "_run_id"] = run_id
             results["4Ba"][key + "_run_dir"] = run_dir
-
-            if args.prediction_mode == "classification":
-                results["4Ba"][key + "_acc"] = eval_acc
-                results["4Ba"][key + "_confusion_matrix"] = cm.tolist()
+            for k, v in metrics.items():
+                results["4Ba"][key + "_" + k.replace("eval/", "")] = v
 
             with open(eval_results_path, "w") as f:
                 json.dump(results, f, indent=2)

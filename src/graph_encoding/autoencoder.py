@@ -367,7 +367,8 @@ class HeteroGraphAutoencoder(nn.Module):
         feat_logits = self.decode_features(z_dict)
         edge_logits = self.decode_edges(z_dict, data.edge_index_dict)
         return z_dict, feat_logits, edge_logits
-    
+
+'''    
 class ProjectionHead(nn.Module):
     def __init__(self, in_dim=128, proj_dim=128):
         super().__init__()
@@ -379,7 +380,22 @@ class ProjectionHead(nn.Module):
 
     def forward(self, x):
         return self.proj(x)
+'''
+class ProjectionHead(nn.Module):
+    def __init__(self, in_dim=128, proj_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, proj_dim),
+            nn.ReLU(),
+            nn.Linear(proj_dim, proj_dim),
+        )
+        self.ln = nn.LayerNorm(proj_dim)
 
+    def forward(self, x):
+        p = self.net(x)
+        p = self.ln(p)
+        p = torch.nn.functional.normalize(p, dim=-1)  # prevents scale weirdness
+        return p
 
 def feature_loss(feat_logits, data):
     total_loss, total_dims = 0.0, 0
@@ -432,7 +448,7 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
         any_device = next(iter(z_dict.values())).device if z_dict else "cpu"
         return torch.tensor(0.0, device=any_device)
     return loss / count
-
+'''
 def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     mu1, mu2 = z1.mean(0), z2.mean(0)
     var1 = z1.var(0) + eps
@@ -444,6 +460,24 @@ def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
         - 1
     )
     return kl
+'''
+def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
+    # z1,z2: [B,D]
+    mu1, mu2 = z1.mean(dim=0), z2.mean(dim=0)
+    var1 = z1.var(dim=0, unbiased=False) + eps
+    var2 = z2.var(dim=0, unbiased=False) + eps
+
+    kl12 = 0.5 * torch.mean(torch.log(var2 / var1) + (var1 + (mu1 - mu2).pow(2)) / var2 - 1.0)
+    kl21 = 0.5 * torch.mean(torch.log(var1 / var2) + (var2 + (mu2 - mu1).pow(2)) / var1 - 1.0)
+    return 0.5 * (kl12 + kl21)
+
+def coral_loss(x, y):
+    # x,y: [B,D]
+    x = x - x.mean(dim=0, keepdim=True)
+    y = y - y.mean(dim=0, keepdim=True)
+    cx = (x.t() @ x) / (x.size(0) - 1 + 1e-6)
+    cy = (y.t() @ y) / (y.size(0) - 1 + 1e-6)
+    return ((cx - cy) ** 2).mean()
 
 def batched_graph_embeddings(z_dict, batch_data, metadata, pooling="mean", embed_dim_per_type=32):
 
