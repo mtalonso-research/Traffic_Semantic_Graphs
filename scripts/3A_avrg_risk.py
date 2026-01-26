@@ -2,39 +2,34 @@ import argparse
 import os
 import json
 from typing import Dict, Any
-
 import numpy as np
 import torch
 from tqdm import tqdm
 from torch_geometric.loader import DataLoader
-
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.experiment_utils.A_utils import (
-    resolve_paths,
-    load_dataset,
-    compute_train_constant,
-    extract_graph_targets,
-    confusion_matrix,
-    classification_metrics_from_cm,
-    ordinal_mae,
-    quadratic_weighted_kappa,
-    log_loss_from_hard_preds,
-    regression_metrics,
-    tail_regression_metrics,
-    sklearn_expanded_classification_metrics,
-)
-
+from src.experiment_utils import (resolve_paths,load_dataset,compute_train_constant,extract_graph_targets,
+                                  confusion_matrix,classification_metrics_from_cm,ordinal_mae,quadratic_weighted_kappa,
+                                  log_loss_from_hard_preds,regression_metrics,tail_regression_metrics,
+                                  sklearn_expanded_classification_metrics,log_annotations)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def run(args):
+    if args.clean:
+        dataset_name = "clean"
+    elif args.noisy is not None:
+        dataset_name = f"noisy_{args.noisy}"
+    else:
+        raise SystemExit("Specify exactly one dataset: --clean or --noisy <level>.")
 
-def run(args) -> Dict[str, Any]:
-    if args.l2d == args.nup:
-        raise SystemExit("Specify exactly one dataset: --l2d or --nup (not both, not neither).")
 
-    dataset_name = "L2D" if args.l2d else "NuPlan"
-    paths = resolve_paths(args.data_root, dataset_name)
+    data_root = args.data_root
+    if args.l2d:
+        data_root = os.path.join(data_root, "L2D")
+    elif args.nup:
+        data_root = os.path.join(data_root, "NuPlan")
+
+    paths = resolve_paths(data_root, dataset_name)
 
     print(f"[info] dataset = {dataset_name}")
     print("[info] loading TRAIN...")
@@ -118,15 +113,32 @@ def run(args) -> Dict[str, Any]:
             json.dump(metrics, f, indent=2)
         print(f"[info] saved metrics json -> {args.save_metrics_json}")
 
+    log_annotations(
+        file_path="./experiment_results/df.csv",
+        script_name="BaselineA",
+        anchor_pct=0,
+        noise_pct=args.noisy if args.noisy is not None else 0,
+        seed=0,
+        metrics=metrics,
+        domain="clean" if args.clean else "noisy",
+    )
+
     return metrics
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Constant baseline: predict training mean (or mode class).")
 
+    dataset_group = parser.add_mutually_exclusive_group(required=True)
+    dataset_group.add_argument("--l2d", action="store_true", help="Use L2D dataset.")
+    dataset_group.add_argument("--nup", action="store_true", help="Use NuPlan dataset.")
+
     parser.add_argument("--data_root", type=str, default="data")
-    parser.add_argument("--l2d", action="store_true")
-    parser.add_argument("--nup", action="store_true")
+    
+    noise_group = parser.add_mutually_exclusive_group(required=True)
+    noise_group.add_argument("--clean", action="store_true", help="Use clean data.")
+    noise_group.add_argument("--noisy", type=int, help="Use noisy data with a specific noise level (e.g., 10, 20, 40, 60).")
+
 
     parser.add_argument("--mode", type=str, default="all")
     parser.add_argument("--batch_size", type=int, default=64)

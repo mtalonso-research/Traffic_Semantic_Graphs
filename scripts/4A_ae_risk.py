@@ -1,60 +1,28 @@
-# scripts/4Ba_ae_then_risk.py
 import argparse
 import os
 import sys
 import json
-from typing import Dict, Any
-
 import numpy as np
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
-from sklearn.metrics import (
-    mean_absolute_error,
-    cohen_kappa_score,
-    mean_squared_error,
-    r2_score,
-    confusion_matrix,
-)
 from scipy.stats import spearmanr
-
 import wandb
-
+from sklearn.metrics import (mean_absolute_error,cohen_kappa_score,mean_squared_error,r2_score,confusion_matrix,)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from src.graph_encoding.data_loaders import get_graph_dataset
-from src.graph_encoding.autoencoder import (
-    HeteroGraphAutoencoder,
-    batched_graph_embeddings,
-    QuantileFeatureQuantizer,
-    feature_loss,
-    edge_loss,
-)
+from src.graph_encoding.autoencoder import (HeteroGraphAutoencoder,batched_graph_embeddings,QuantileFeatureQuantizer,
+                                            feature_loss,edge_loss,)
 from src.graph_encoding.risk_prediction import RiskPredictionHead
-from src.experiment_utils.B_utils import (
-    set_seed,
-    seed_worker,
-    risk_to_class_safe,
-    infer_graph_emb_dim,
-    apply_yaml_overrides,
-    enforce_dataset_cli_wins,
-    resolve_paths,
-    _format_confusion_matrix,
-    _print_access,
-    _require_dir,
-    _require_file,
-    _make_fallback_run_id,
-    _ensure_dir,
-    classification_metrics_from_cm,
-)
-
+from src.experiment_utils import (set_seed,seed_worker,risk_to_class_safe,infer_graph_emb_dim,apply_yaml_overrides,
+                                  resolve_paths,_format_confusion_matrix,_print_access,_require_dir,_require_file,
+                                  _make_fallback_run_id,_ensure_dir,classification_metrics_from_cm,log_annotations,)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def run_task(args: argparse.Namespace) -> None:
-    # If in evaluation-only mode, load args from the checkpoint to ensure model compatibility.
+def run_task(args: argparse.Namespace):
     is_eval_only_flag = bool(args.evaluate) and not bool(args.train_autoencoder) and not bool(args.train_risk)
     if is_eval_only_flag:
         original_best_model_path = args.best_model_path
@@ -81,7 +49,6 @@ def run_task(args: argparse.Namespace) -> None:
     run_id = None
 
     if args.wandb or args.sweep:
-        # Note: wandb.init() creates a run id we can use to isolate outputs.
         wandb_run = wandb.init(config=vars(args))
         run_id = wandb_run.id
 
@@ -94,23 +61,25 @@ def run_task(args: argparse.Namespace) -> None:
         run_id = _make_fallback_run_id()
 
     # ---------------- CLI / seed / dataset enforcement ----------------
-    enforce_dataset_cli_wins(args)
     set_seed(args.seed)
+    
+    if args.l2d:
+        args.data_root = os.path.join("data", "L2D")
+    elif args.nup:
+        args.data_root = os.path.join("data", "NuPlan")
+    
     args.data_root = os.path.abspath(args.data_root)
 
-    if args.l2d == args.nup:
-        raise SystemExit("Specify exactly one dataset: --l2d or --nup (not both, not neither).")
+    dataset_name = ""
+    if args.clean:
+        dataset_name = "clean"
+    elif args.noisy is not None:
+        dataset_name = f"noisy_{args.noisy}"
 
-    dataset_name = "L2D" if args.l2d else "NuPlan"
     side_info_str = "_with_side_info" if args.with_side_information else ""
     pred_tag = "_class" if args.prediction_mode == "classification" else "_reg"
 
     # ---------------- OUTPUT ISOLATION (NO OVERWRITES) ----------------
-    # Two modes:
-    #  - Training mode: create a fresh per-run directory under output_root using run_id.
-    #  - Eval-only mode (--evaluate): do NOT create a new run_id/run_dir. Use the checkpoint path directly.
-
-    # If user explicitly provides run_id, honor it (useful for reproducibility / re-runs).
     if getattr(args, "run_id", None):
         run_id = args.run_id
 
@@ -125,7 +94,6 @@ def run_task(args: argparse.Namespace) -> None:
         ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
 
-        # For logging/debugging
         if wandb_run is not None:
             wandb.config.update(
                 {"run_id": run_id, "run_dir": run_dir, "best_model_path": best_model_path},
@@ -133,7 +101,6 @@ def run_task(args: argparse.Namespace) -> None:
             )
 
     else:
-        # TRAINING (or anything that might write artifacts): isolate by run_id.
         output_root = _ensure_dir(os.path.abspath(args.output_root))
         run_dir = _ensure_dir(
             os.path.join(
@@ -145,11 +112,9 @@ def run_task(args: argparse.Namespace) -> None:
             )
         )
 
-        # Log run_dir for debugging + for your future self
         if wandb_run is not None:
             wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
 
-        # Default checkpoint naming (kept, but now placed in run_dir)
         if os.path.basename(args.best_model_path) == "best_model.pt":
             risk_ckpt_name = f"4Ba_{dataset_name}{side_info_str}{pred_tag}_best_model.pt"
         else:
@@ -158,7 +123,6 @@ def run_task(args: argparse.Namespace) -> None:
         best_model_path = os.path.join(run_dir, risk_ckpt_name)
         ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
 
-        # Also isolate evaluation outputs so multiple runs never fight over the same JSON.
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
 
     paths = resolve_paths(args, dataset_name)
@@ -169,11 +133,7 @@ def run_task(args: argparse.Namespace) -> None:
     _require_dir(paths["train_graph_root"], "Training graphs")
     _require_file(paths["train_risk_path"], "Training risk scores JSON")
 
-    # Side info only for L2D if requested
     side_information_path = None
-    if args.with_side_information and args.l2d:
-        side_information_path = os.path.join(args.data_root, "training_data", "L2D", "L2D_frame_embs")
-        _print_access("Side information", side_information_path)
 
     print("Loading TRAIN dataset...")
     train_dataset_full = get_graph_dataset(
@@ -467,7 +427,7 @@ def run_task(args: argparse.Namespace) -> None:
         eval_dataset_full = get_graph_dataset(
             root_dir=paths["eval_graph_root"],
             mode=args.mode,
-            side_information_path=side_information_path if (args.with_side_information and args.l2d) else None,
+            side_information_path=None,
             risk_scores_path=paths["eval_risk_path"],
         )
 
@@ -517,8 +477,6 @@ def run_task(args: argparse.Namespace) -> None:
             cls_metrics["qwk"] = cohen_kappa_score(y_true_np, y_pred_np, weights='quadratic')
 
             metrics.update(cls_metrics)
-
-            # remove confusion matrix from metrics to print it separately
             cm_list = metrics.pop("confusion_matrix")
 
             print(f"\n========== {dataset_name} evaluation results ==========")
@@ -554,11 +512,9 @@ def run_task(args: argparse.Namespace) -> None:
                     results = json.load(f)
 
             results.setdefault("4Ba", {})
-            key = (
-                "L2D_with_side_info"
-                if (args.l2d and args.with_side_information)
-                else ("L2D_without_side_info" if args.l2d else "NuPlan")
-            )
+            key = dataset_name
+            if args.with_side_information:
+                key += "_with_side_info"
 
             # Update results with all new metrics
             results["4Ba"][key] = avg_loss
@@ -574,15 +530,32 @@ def run_task(args: argparse.Namespace) -> None:
     if wandb_run is not None:
         wandb_run.finish()
 
+    log_annotations(
+        file_path="./experiment_results/df.csv",
+        script_name="BaselineB",
+        anchor_pct=0,
+        noise_pct=args.noisy if args.noisy is not None else 0,
+        seed=args.seed,
+        metrics=metrics,
+        domain="clean" if args.clean else "noisy",
+    )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="4Ba: Autoencoder (reconstruction) then risk head (encoder frozen).")
 
-    parser.add_argument("--data_root", type=str, default="data")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--l2d", action="store_true", help="Use L2D dataset.")
+    group.add_argument("--nup", action="store_true", help="Use NuPlan dataset.")
+    
+    parser.add_argument("--data_root", type=str, help="Root directory of the dataset.")
+
 
     # Dataset select
-    parser.add_argument("--l2d", action="store_true")
-    parser.add_argument("--nup", action="store_true")
+    dataset_group = parser.add_mutually_exclusive_group(required=True)
+    dataset_group.add_argument("--clean", action="store_true", help="Use clean data.")
+    dataset_group.add_argument("--noisy", type=int, help="Use noisy data with a specified percentage (e.g., 10, 20).")
+
     parser.add_argument("--with_side_information", action="store_true")
 
     # Model
