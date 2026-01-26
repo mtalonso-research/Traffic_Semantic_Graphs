@@ -157,7 +157,7 @@ def main():
     Defines the command-line interface and runs the main experiment loop.
     """
     parser = argparse.ArgumentParser(description="Run a series of experiments.")
-    parser.add_argument("experiment", type=str, choices=['BaselineB', 'UST'], help="The name of the experiment set to run.")
+    parser.add_argument("--experiment", type=str, choices=['BaselineB', 'UST'], help="The name of the experiment set to run.")
     parser.add_argument("--noises", nargs='+', type=int, default=None, help="List of noise levels to iterate through. Overrides the default.")
     parser.add_argument("--seeds", nargs='+', type=int, default=None, help="List of seeds to iterate through. Overrides the default.")
     parser.add_argument("--anchors", nargs='+', type=int, default=None, help="List of anchor percentages for the UST experiment. Overrides the default.")
