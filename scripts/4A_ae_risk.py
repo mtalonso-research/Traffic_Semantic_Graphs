@@ -89,41 +89,42 @@ def run_task(args: argparse.Namespace):
         # EVAL-ONLY: use the provided checkpoint path as-is.
         best_model_path = os.path.abspath(args.best_model_path)
         _require_file(best_model_path, "Checkpoint (--best_model_path) for evaluation")
-
         run_dir = os.path.dirname(best_model_path)
         ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
-
         if wandb_run is not None:
             wandb.config.update(
                 {"run_id": run_id, "run_dir": run_dir, "best_model_path": best_model_path},
                 allow_val_change=True,
             )
-
     else:
-        output_root = _ensure_dir(os.path.abspath(args.output_root))
-        run_dir = _ensure_dir(
-            os.path.join(
-                output_root,
-                "4Ba",
-                dataset_name,
-                ("classification" if args.prediction_mode == "classification" else "regression"),
-                run_id,
+        # If a specific path is given (and it's not the default placeholder), use it directly.
+        if args.best_model_path and args.best_model_path != "./models/risk_predictor/best_model.pt":
+            best_model_path = os.path.abspath(args.best_model_path)
+            run_dir = os.path.dirname(best_model_path)
+            _ensure_dir(run_dir)
+        else:
+            # Original path-building logic
+            output_root = _ensure_dir(os.path.abspath(args.output_root))
+            run_dir = _ensure_dir(
+                os.path.join(
+                    output_root,
+                    "4Ba",
+                    dataset_name,
+                    ("classification" if args.prediction_mode == "classification" else "regression"),
+                    run_id,
+                )
             )
-        )
-
+            if os.path.basename(args.best_model_path) == "best_model.pt":
+                risk_ckpt_name = f"4Ba_{dataset_name}{side_info_str}{pred_tag}_best_model.pt"
+            else:
+                risk_ckpt_name = os.path.basename(args.best_model_path)
+            best_model_path = os.path.join(run_dir, risk_ckpt_name)
+        
+        ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
+        eval_results_path = os.path.join(run_dir, "evaluation_results.json")
         if wandb_run is not None:
             wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
-
-        if os.path.basename(args.best_model_path) == "best_model.pt":
-            risk_ckpt_name = f"4Ba_{dataset_name}{side_info_str}{pred_tag}_best_model.pt"
-        else:
-            risk_ckpt_name = os.path.basename(args.best_model_path)
-
-        best_model_path = os.path.join(run_dir, risk_ckpt_name)
-        ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
-
-        eval_results_path = os.path.join(run_dir, "evaluation_results.json")
 
     paths = resolve_paths(args, dataset_name)
 

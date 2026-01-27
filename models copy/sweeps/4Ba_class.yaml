@@ -1,0 +1,118 @@
+program: scripts/4Ba_ae-risk.py
+method: bayes
+
+metric:
+  name: risk/val_loss
+  goal: minimize
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --sweep
+  - --wandb
+  - --nup
+  - --train_autoencoder
+  - --train_risk
+  # NOTE: no --evaluate flag (default = False)
+
+parameters:
+  # -------------------------
+  # FIXED: dataset & task
+  # -------------------------
+  prediction_mode:
+    value: classification
+
+  num_classes:
+    value: 4
+
+  mode:
+    value: all
+
+  seed:
+    value: 42
+
+  # -------------------------
+  # AUTOENCODER (representation learning)
+  # -------------------------
+  hidden_dim:
+    values: [64, 128]
+
+  embed_dim:
+    values: [64, 128, 254]
+
+  num_encoder_layers:
+    values: [1, 2]
+
+  dropout_rate:
+    values: [0.1, 0.3]
+
+  quant_bins:
+    value: 32
+
+  ae_lr:
+    distribution: log_uniform_values
+    min: 5e-5
+    max: 5e-4
+
+  ae_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-4
+
+  ae_epochs:
+    value: 60   # fixed
+
+  # -------------------------
+  # RISK HEAD (classification)
+  # -------------------------
+  risk_hidden_dim:
+    values: [32, 64, 128]
+
+  risk_lr:
+    distribution: log_uniform_values
+    min: 5e-5
+    max: 5e-4
+
+  risk_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-4
+
+  risk_epochs:
+    value: 20
+
+  # -------------------------
+  # TRAINING / LOADER
+  # -------------------------
+  batch_size:
+    values: [8, 16]
+
+  val_fraction:
+    value: 0.2
+
+  num_workers:
+    value: 0
+
+  # -------------------------
+  # PIPELINE FLAGS
+  # -------------------------
+  train_autoencoder:
+    value: true
+
+  train_risk:
+    value: true
+
+  # DO NOT include evaluate here
+
+  # -------------------------
+  # OUTPUT ISOLATION (IMPORTANT)
+  # -------------------------
+  output_root:
+    value: ./outputs
+
+  # -------------------------
+  # W&B
+  # -------------------------
+  wandb:
+    value: true

@@ -14,10 +14,23 @@ def run_experiment_baselineb(config, verbose=False):
     args = []
 
     arg_map = {
+
         'l2d': '--l2d', 'nup': '--nup', 'clean': '--clean', 'noisy': '--noisy',
+
         'seed': '--seed', 'prediction_mode': '--prediction_mode', 'num_workers': '--num_workers',
+
         'evaluate': '--evaluate', 'train_autoencoder': '--train_autoencoder', 'train_risk': '--train_risk',
+
         'best_model_path': '--best_model_path', 'ae_epochs': '--ae_epochs', 'risk_epochs': '--risk_epochs',
+
+        'hidden_dim': '--hidden_dim', 'embed_dim': '--embed_dim', 'num_encoder_layers': '--num_encoder_layers',
+
+        'num_decoder_layers': '--num_decoder_layers', 'activation': '--activation', 'dropout_rate': '--dropout_rate',
+
+        'risk_hidden_dim': '--risk_hidden_dim', 'quant_bins': '--quant_bins', 'ae_lr': '--ae_lr',
+
+        'ae_weight_decay': '--ae_weight_decay', 'risk_lr': '--risk_lr', 'risk_weight_decay': '--risk_weight_decay',
+
     }
 
     for key, value in config.items():
@@ -115,19 +128,34 @@ def experiment_loop(exp,noises=[5,10,15,20,25,30,35,40,45,50,55,60],
 
         for noise in noises:
             base_config = {
-                'script': '4A_ae_risk', 'nup': True, 'noisy': noise, 'prediction_mode': 'classification',
-                'train_autoencoder': True, 'train_risk': True, 'evaluate': True, 'hidden_dim': 64,
-                'embed_dim': 254, 'num_encoder_layers': 2, 'num_decoder_layers': 1, 'activation': 'relu',
-                'dropout_rate': 0.1, 'risk_hidden_dim': 32, 'quant_bins': 32, 'ae_epochs': 60,
-                'ae_lr': 8.913123740996388e-05, 'ae_weight_decay': 5.552716770961925e-06, 'risk_epochs': 20,
-                'risk_lr': 0.00029895883375268494, 'risk_weight_decay': 1.3705141698203051e-06,
+                'script': '4A_ae_risk', 
+                'nup': True, 
+                'noisy': noise, 
+                'prediction_mode': 'classification',
+                'train_autoencoder': True, 
+                'train_risk': True, 
+                'evaluate': True, 
+                'hidden_dim': 64,
+                'embed_dim': 254, 
+                'num_encoder_layers': 2, 
+                'num_decoder_layers': 1, 
+                'activation': 'relu',
+                'dropout_rate': 0.1, 
+                'risk_hidden_dim': 32, 
+                'quant_bins': 32, 
+                'ae_epochs': 60,
+                'ae_lr': 8.913123740996388e-05, 
+                'ae_weight_decay': 5.552716770961925e-06, 
+                'risk_epochs': 20,
+                'risk_lr': 0.00029895883375268494, 
+                'risk_weight_decay': 1.3705141698203051e-06,
             }
             if zero_workers: base_config['num_workers'] = 0
 
             for seed_value in seeds:
                 if pbar: pbar.set_description(f"BaselineB (noise={noise}, seed={seed_value})")
                 current_config = base_config.copy()
-                current_config['best_model_path'] = f'./models/4B/4B_noisy{noise}_class_best_model_{seed_value}.pt'
+                current_config['best_model_path'] = f'./models/BaselineB/noisy{noise}/noisy{noise}_seed{seed_value}.pt'
                 current_config['seed'] = seed_value
                 
                 return_code = run_experiment_baselineb(current_config, verbose=verbose)
@@ -143,12 +171,22 @@ def experiment_loop(exp,noises=[5,10,15,20,25,30,35,40,45,50,55,60],
         for noise in noises:
             for seed in seeds:
                 base_config = {
-                    'script': '5A_ust_risk', 'train_stage2': True, 'evaluate': True, 'nup': True,
-                    'load_best_ae_clean': True, 'load_best_ae_noisy': True, 'noisy': noise,
-                    'ae_clean_ckpt_path': f'./models/4B/clean/4B_clean_class_best_model_{seed}.pt',
-                    'ae_noisy_ckpt_path': f'./models/4B/noisy{noise}/4B_noisy{noise}_class_best_model_{seed}.pt',
-                    'embed_dim': 254, 'hidden_dim': 64, 'num_encoder_layers': 2, 'num_decoder_layers': 1,
-                    'risk_hidden_dim': 32, 'stage2_epochs': 20, 'stage2_lr': 0.00029895883375268494,
+                    'script': '5A_ust_risk', 
+                    'train_stage2': True, 
+                    'evaluate': True, 
+                    'nup': True,
+                    'load_best_ae_clean': True, 
+                    'load_best_ae_noisy': True, 
+                    'noisy': noise,
+                    'ae_clean_ckpt_path': f'./models/BaselineB/clean/clean_seed{seed}.pt',
+                    'ae_noisy_ckpt_path': f'./models/BaselineB/noisy{noise}/noisy{noise}_seed{seed}.pt',
+                    'embed_dim': 254, 
+                    'hidden_dim': 64, 
+                    'num_encoder_layers': 2, 
+                    'num_decoder_layers': 1,
+                    'risk_hidden_dim': 32, 
+                    'stage2_epochs': 20, 
+                    'stage2_lr': 0.00029895883375268494,
                     'stage2_weight_decay': 1.3705141698203051e-06,
                 }
                 if zero_workers: base_config['num_workers'] = 0
@@ -158,7 +196,7 @@ def experiment_loop(exp,noises=[5,10,15,20,25,30,35,40,45,50,55,60],
                     current_config = base_config.copy()
                     current_config['seed'] = seed
                     current_config['clean'] = anchor
-                    current_config['best_model_path'] = f'./models/4C/4C_clean{anchor}_noisy{noise}_best_model_{seed}.pt'
+                    current_config['best_model_path'] = f'./models/UST/noisy{noise}/anchor{anchor}/clean{anchor}_noisy{noise}_seed{seed}.pt'
                     
                     return_code = run_experiment_ust(current_config, verbose=verbose)
                     if return_code != 0 and pbar:

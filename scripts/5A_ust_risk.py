@@ -221,24 +221,29 @@ def run_task(args: argparse.Namespace):
         if wandb_run is not None:
             wandb.config.update({"run_id": run_id, "run_dir": run_dir, "best_model_path": main_ckpt_path}, allow_val_change=True)
     else:
-        output_root = _ensure_dir(os.path.abspath(args.output_root))
-        run_dir = _ensure_dir(
-            os.path.join(
-                output_root,
-                "4Bb_align_anchors_paired_FIXED",
-                f"{ds_clean_name}_vs_{ds_noisy_name}",
-                ("classification" if args.prediction_mode == "classification" else "regression"),
-                run_id,
+        # If a specific path is given (and it's not the default placeholder), use it directly.
+        if args.best_model_path and args.best_model_path != "./models/risk_predictor/best_model.pt":
+             main_ckpt_path = os.path.abspath(args.best_model_path)
+             run_dir = os.path.dirname(main_ckpt_path)
+             _ensure_dir(run_dir)
+        else:
+            # Original path-building logic
+            output_root = _ensure_dir(os.path.abspath(args.output_root))
+            run_dir = _ensure_dir(
+                os.path.join(
+                    output_root,
+                    "4Bb_align_anchors_paired_FIXED",
+                    f"{ds_clean_name}_vs_{ds_noisy_name}",
+                    ("classification" if args.prediction_mode == "classification" else "regression"),
+                    run_id,
+                )
             )
-        )
+            main_ckpt_name = f"4Bb_{ds_clean_name}_vs_{ds_noisy_name}_anchors_paired_FIXED_best_model.pt"
+            main_ckpt_path = os.path.join(run_dir, main_ckpt_name)
+
+        eval_results_path = os.path.join(run_dir, "evaluation_results.json")
         if wandb_run is not None:
             wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
-
-        main_ckpt_name = os.path.basename(args.best_model_path)
-        if main_ckpt_name == "best_model.pt":
-            main_ckpt_name = f"4Bb_{ds_clean_name}_vs_{ds_noisy_name}_anchors_paired_FIXED_best_model.pt"
-        main_ckpt_path = os.path.join(run_dir, main_ckpt_name)
-        eval_results_path = os.path.join(run_dir, "evaluation_results.json")
 
     ae_clean_ckpt_path = os.path.join(run_dir, f"4Bb_{ds_clean_name}_ae_best_model.pt")
     ae_noisy_ckpt_path = os.path.join(run_dir, f"4Bb_{ds_noisy_name}_ae_best_model.pt")

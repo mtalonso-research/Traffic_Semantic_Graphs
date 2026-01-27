@@ -1,0 +1,116 @@
+# ===============================
+# 4Ca — Sweep 1 (Select by RISK validation LOSS, no eval leakage)
+# Runs: train_encoder + extract_embeddings(train) + train_risk
+# Selects: best risk/val_loss (minimize)
+# Does NOT run evaluate_risk during sweep
+# ===============================
+
+program: scripts/4Ca_UST-2.py
+method: bayes
+
+metric:
+  name: risk/val_loss
+  goal: minimize
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --train_encoder
+  - --extract_embeddings
+  - --embed_split
+  - train
+  - --train_risk
+  - --use_wandb
+  - --wandb_mode
+  - online
+  - --wandb_project
+  - Traffic_Semantic_Graphs-scripts
+  - ${args}
+
+parameters:
+  # -------------------------
+  # Fixed: task + data
+  # -------------------------
+  mode:
+    value: all
+  prediction_mode:
+    value: classification
+  num_classes:
+    value: 4
+  seed:
+    value: 42
+
+  data_root:
+    value: data
+  output_root:
+    value: ./outputs
+
+  # -------------------------
+  # Fixed: from best 4Ba (encoder architecture)
+  # -------------------------
+  hidden_dim:
+    value: 64
+  embed_dim:
+    value: 254
+  num_encoder_layers:
+    value: 2
+  num_decoder_layers:
+    value: 1
+  activation:
+    value: relu
+  dropout_rate:
+    value: 0.1
+  quant_bins:
+    value: 32
+
+  # -------------------------
+  # Fixed: from best 4Ba (risk head)
+  # -------------------------
+  risk_epochs:
+    value: 20
+  risk_hidden_dim:
+    value: 32
+  risk_lr:
+    value: 2.9895883375268494e-04
+  risk_weight_decay:
+    value: 1.3705141698203051e-06
+
+  # -------------------------
+  # Fixed: loaders/split
+  # -------------------------
+  batch_size:
+    value: 8
+  val_fraction:
+    value: 0.2
+  num_workers:
+    value: 0
+
+  # -------------------------
+  # Tuned for 4Ca
+  # -------------------------
+  proj_dim:
+    values: [256, 512, 1024]
+
+  kl_weight:
+    distribution: log_uniform_values
+    min: 1.0e-4
+    max: 3.0e-1
+
+  lr:
+    distribution: log_uniform_values
+    min: 3.0e-5
+    max: 3.0e-4
+
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1.0e-7
+    max: 1.0e-4
+
+  num_epochs:
+    values: [60]
+
+  align_warmup_epochs:
+    value: 10
+  align_ramp_epochs:
+    value: 10

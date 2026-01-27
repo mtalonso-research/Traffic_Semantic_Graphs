@@ -1,0 +1,24 @@
+{
+  "4Bb_align_anchors_paired_FIXED": {
+    "clean_vs_noisy_10_run_id": "local-1769300614-16456-ffe417ea",
+    "clean_vs_noisy_10_run_dir": "/Users/mariantemprana/Developer/Active_Projects/Traffic_Semantic_Graphs/models/4C",
+    "clean_vs_noisy_10_clean/loss": 1.247289199095506,
+    "clean_vs_noisy_10_clean/accuracy": 0.44,
+    "clean_vs_noisy_10_clean/micro_f1": 0.44,
+    "clean_vs_noisy_10_clean/macro_precision": 0.4490216565349544,
+    "clean_vs_noisy_10_clean/macro_recall": 0.4091503267973856,
+    "clean_vs_noisy_10_clean/macro_f1": 0.35498370692208947,
+    "clean_vs_noisy_10_clean/balanced_accuracy": 0.4091503267973856,
+    "clean_vs_noisy_10_clean/ordinal_mae_bins": 0.98,
+    "clean_vs_noisy_10_clean/qwk": 0.396699591885018,
+    "clean_vs_noisy_10_noisy/loss": 1.410517619206355,
+    "clean_vs_noisy_10_noisy/accuracy": 0.32,
+    "clean_vs_noisy_10_noisy/micro_f1": 0.32,
+    "clean_vs_noisy_10_noisy/macro_precision": 0.38438328912466846,
+    "clean_vs_noisy_10_noisy/macro_recall": 0.34560371517027866,
+    "clean_vs_noisy_10_noisy/macro_f1": 0.28742412537247547,
+    "clean_vs_noisy_10_noisy/balanced_accuracy": 0.34560371517027866,
+    "clean_vs_noisy_10_noisy/ordinal_mae_bins": 1.19,
+    "clean_vs_noisy_10_noisy/qwk": 0.24405402175212143
+  }
+}
