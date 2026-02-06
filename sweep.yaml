@@ -1,0 +1,93 @@
+program: scripts/4A_ae_risk.py
+
+method: bayes
+metric:
+  name: risk/val_loss
+  goal: minimize
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+
+parameters:
+  # ----- Encoder / AE capacity -----
+  hidden_dim:
+    values: [64, 128, 256]
+  embed_dim:
+    values: [16, 32, 64]
+  num_encoder_layers:
+    values: [1, 2, 3]
+  num_decoder_layers:
+    values: [1, 2]
+  activation:
+    values: ["relu"]
+  dropout_rate:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
+
+  # ----- Risk head -----
+  risk_hidden_dim:
+    values: [64, 128, 256]
+
+  # ----- Optimization -----
+  ae_lr:
+    distribution: log_uniform_values
+    min: 3e-5
+    max: 3e-4
+  ae_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-4
+
+  risk_lr:
+    distribution: log_uniform_values
+    min: 3e-5
+    max: 3e-4
+  risk_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-3
+
+  # ----- Data / pipeline -----
+  batch_size:
+    values: [4, 8, 16]
+  quant_bins:
+    values: [16, 32, 64]
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --sweep
+  - --wandb
+  - --nup
+  - --clean
+
+  # Force classification explicitly (even though it's the default)
+  - --prediction_mode
+  - classification
+  - --num_classes
+  - "4"
+
+  # Train both stages
+  - --train_autoencoder
+  - --train_risk
+  - --load_best_ae
+
+  # Keep schedule fixed during sweep
+  - --ae_epochs
+  - "10"
+  - --risk_epochs
+  - "10"
+  - --val_fraction
+  - "0.2"
+
+  # Prevent end-of-run crash from undefined `metrics` (see note)
+  - --evaluate
+
+  - --num_workers
+  - "4"
+  - --seed
+  - "42"
