@@ -161,6 +161,15 @@ def run_task(args: argparse.Namespace):
         worker_init_fn=seed_worker if args.num_workers > 0 else None,
         generator=loader_gen,
     )
+    if args.num_workers > 0:
+        common_loader_kwargs.update(
+            dict(
+                worker_init_fn=seed_worker,
+                persistent_workers=True,
+                pin_memory=True,
+                prefetch_factor=2,
+            )
+        )
 
     train_loader = DataLoader(train_dataset, shuffle=True, **common_loader_kwargs)
     val_loader = DataLoader(val_dataset, shuffle=False, **common_loader_kwargs)
