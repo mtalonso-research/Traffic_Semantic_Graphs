@@ -204,17 +204,55 @@ def run_experiment_ust(config, verbose=False):
     return _run_command(full_command, verbose=verbose)
 
 
+def _apply_evaluation_mode(exp: str, config: dict) -> dict:
+    """
+    Mutate a run config so it does evaluation-only (no training),
+    while still using whatever checkpoints/best_model_path the config specifies.
+    """
+    # Always evaluate in evaluation mode.
+    config["evaluate"] = True
+
+    if exp == "BaselineB":
+        # Disable all training stages.
+        config["train_autoencoder"] = False
+        config["train_risk"] = False
+        # Ensure it loads an AE (and typically a best model path) for eval.
+        # If your underlying script uses these flags to locate weights, keep them on.
+        config["load_best_ae"] = True
+
+        # In case the underlying script treats epochs as "do training loops",
+        # force them to 0 to be extra safe.
+        config["ae_epochs"] = 0
+        config["risk_epochs"] = 0
+
+    elif exp == "UST":
+        # Disable training stages.
+        config["train_stage2"] = False
+        config["train_autoencoders"] = False
+
+        # Make sure it loads the pretrained AEs (your config already provides paths).
+        config["load_best_ae_clean"] = True
+        config["load_best_ae_noisy"] = True
+
+        # Again, belt-and-suspenders if the script uses these to decide to train.
+        config["stage2_epochs"] = 0
+
+    return config
+
+
 def experiment_loop(
     exp,
     noises=[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60],
     seeds=[42, 1024, 31, 25, 334, 723, 567, 7, 121, 9],
-    anchors=[1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
+    # anchors=[1, 2, 3, 4, 5, 10, 15, 20, 25, 30],
+    anchors=[2, 5, 10, 20, 30],
     zero_workers=False,
     verbose=False,
+    evaluation_mode=False,
 ):
     BEST = {
         "hidden_dim": 64,
-        "embed_dim": 64, # 64x4=256
+        "embed_dim": 64,  # 64x4=256
         "num_encoder_layers": 3,
         "num_decoder_layers": 1,
         "activation": "relu",
@@ -293,6 +331,9 @@ def experiment_loop(
                     f'{"clean" if noise == 0 else f"noisy{noise}"}_seed{seed_value}.pt'
                 )
 
+                if evaluation_mode:
+                    current_config = _apply_evaluation_mode("BaselineB", current_config)
+
                 rc = run_experiment_baselineb(current_config, verbose=verbose)
                 if rc != 0 and pbar:
                     pbar.write(f"Run FAILED for noise={noise}, seed={seed_value}")
@@ -366,6 +407,9 @@ def experiment_loop(
                         f"clean{anchor}_noisy{noise}_seed{seed}.pt"
                     )
 
+                    if evaluation_mode:
+                        current_config = _apply_evaluation_mode("UST", current_config)
+
                     rc = run_experiment_ust(current_config, verbose=verbose)
                     if rc != 0 and pbar:
                         pbar.write(f"Run FAILED for noise={noise}, seed={seed}, anchor={anchor}")
@@ -384,12 +428,21 @@ if __name__ == "__main__":
     parser.add_argument("--anchors", nargs="+", type=int)
     parser.add_argument("--zero_workers", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+
+    # NEW: evaluation-only mode (no training)
+    parser.add_argument(
+        "--evaluation_mode",
+        action="store_true",
+        help="If set, run evaluation only (disable training stages) for the selected experiments.",
+    )
+
     args = parser.parse_args()
 
     kwargs = {
         "exp": args.experiment,
         "zero_workers": args.zero_workers,
         "verbose": args.verbose,
+        "evaluation_mode": args.evaluation_mode,
     }
     if args.noises is not None:
         kwargs["noises"] = args.noises

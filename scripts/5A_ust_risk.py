@@ -17,7 +17,9 @@ from sklearn.metrics import (
     r2_score,
     confusion_matrix,
 )
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.graph_encoding.data_loaders import get_graph_dataset
 from src.graph_encoding.autoencoder import (
     batched_graph_embeddings,
@@ -51,6 +53,7 @@ from src.experiment_utils import (
     _set_requires_grad,
     log_annotations,
 )
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 _AE_ARGS_TO_ADOPT = [
@@ -82,7 +85,10 @@ _STAGE2_ARGS_TO_ADOPT = [
     "dataset_noisy",
 ]
 
+
 def run_task(args: argparse.Namespace):
+    metrics = {}
+
     # ---------------- Eval-only compatibility load ----------------
     is_eval_only_flag = bool(args.evaluate) and not bool(args.train_autoencoders) and not bool(args.train_stage2)
     if is_eval_only_flag:
@@ -182,34 +188,26 @@ def run_task(args: argparse.Namespace):
     meta_noisy = noisy_dataset_full.get_metadata()
     num_base_clean = len(base_clean_dataset_full)
     num_anchors = int((args.clean / 100) * num_base_clean)
-    print('NUM ANCHORS', num_anchors)
+    print("NUM ANCHORS", num_anchors)
     num_to_keep_from_clean = num_base_clean - num_anchors
 
     if num_anchors > 0:
-        # Get indices to keep from base clean dataset
         clean_indices = np.random.permutation(num_base_clean)
         keep_clean_indices = clean_indices[:num_to_keep_from_clean]
-        
-        # Get indices for anchors from noisy_true dataset
+
         noisy_true_indices = np.random.permutation(len(noisy_true_dataset_full))
         anchor_indices = noisy_true_indices[:num_anchors]
 
-        # Create subset of base clean dataset
         clean_subset = Subset(base_clean_dataset_full, keep_clean_indices)
-        
-        # Create subset of noisy_true dataset for anchors
         anchor_subset = Subset(noisy_true_dataset_full, anchor_indices)
 
-        # Combine to create the final clean dataset
         clean_dataset_full = ConcatDataset([clean_subset, anchor_subset])
         print(f"[info] Created final clean dataset with {len(clean_subset)} clean samples and {len(anchor_subset)} anchors.")
     else:
         clean_dataset_full = base_clean_dataset_full
         print("[info] Using base clean dataset without anchors.")
-    
+
     print(f"[info] Total samples in final clean dataset: {len(clean_dataset_full)}")
-
-
 
     # ---------------- output isolation ----------------
     is_eval_only = bool(args.evaluate) and not bool(args.train_autoencoders) and not bool(args.train_stage2)
@@ -219,15 +217,16 @@ def run_task(args: argparse.Namespace):
         run_dir = os.path.dirname(main_ckpt_path)
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
         if wandb_run is not None:
-            wandb.config.update({"run_id": run_id, "run_dir": run_dir, "best_model_path": main_ckpt_path}, allow_val_change=True)
+            wandb.config.update(
+                {"run_id": run_id, "run_dir": run_dir, "best_model_path": main_ckpt_path},
+                allow_val_change=True,
+            )
     else:
-        # If a specific path is given (and it's not the default placeholder), use it directly.
         if args.best_model_path and args.best_model_path != "./models/risk_predictor/best_model.pt":
-             main_ckpt_path = os.path.abspath(args.best_model_path)
-             run_dir = os.path.dirname(main_ckpt_path)
-             _ensure_dir(run_dir)
+            main_ckpt_path = os.path.abspath(args.best_model_path)
+            run_dir = os.path.dirname(main_ckpt_path)
+            _ensure_dir(run_dir)
         else:
-            # Original path-building logic
             output_root = _ensure_dir(os.path.abspath(args.output_root))
             run_dir = _ensure_dir(
                 os.path.join(
@@ -330,10 +329,18 @@ def run_task(args: argparse.Namespace):
     ).to(device)
 
     graph_emb_dim_clean = infer_graph_emb_dim(
-        encoder_clean, quant_clean, clean_train_loader, meta_clean, embed_dim_per_type=args.embed_dim
+        encoder_clean,
+        quant_clean,
+        clean_train_loader,
+        meta_clean,
+        embed_dim_per_type=args.embed_dim,
     )
     graph_emb_dim_noisy = infer_graph_emb_dim(
-        encoder_noisy, quant_noisy, noisy_train_loader, meta_noisy, embed_dim_per_type=args.embed_dim
+        encoder_noisy,
+        quant_noisy,
+        noisy_train_loader,
+        meta_noisy,
+        embed_dim_per_type=args.embed_dim,
     )
 
     print(f"[info] inferred graph_emb_dim_clean = {graph_emb_dim_clean}")
@@ -344,6 +351,26 @@ def run_task(args: argparse.Namespace):
             "Projection heads are same-dim by design."
         )
     graph_emb_dim = graph_emb_dim_clean
+
+    # ---------------- Optional AE initialization for Stage 1 ----------------
+    def maybe_load_ae_init_checkpoint(encoder, ckpt_path: str, label: str):
+        if ckpt_path is None:
+            return
+
+        init_ckpt_path = os.path.abspath(ckpt_path)
+        _require_file(init_ckpt_path, f"Initialization checkpoint (--init_ae_{label}_checkpoint)")
+        init_ckpt = torch.load(init_ckpt_path, map_location=device, weights_only=False)
+
+        if "encoder_state_dict" not in init_ckpt:
+            raise KeyError(
+                f"Checkpoint at {init_ckpt_path} does not contain 'encoder_state_dict'."
+            )
+
+        encoder.load_state_dict(init_ckpt["encoder_state_dict"], strict=True)
+        print(f"[ok] initialized {label} encoder for Stage 1 from checkpoint: {init_ckpt_path}")
+
+    maybe_load_ae_init_checkpoint(encoder_clean, args.init_ae_clean_checkpoint, "clean")
+    maybe_load_ae_init_checkpoint(encoder_noisy, args.init_ae_noisy_checkpoint, "noisy")
 
     # ---------------- stage helpers ----------------
     def encode_graph_embeddings_clean(batch):
@@ -441,8 +468,22 @@ def run_task(args: argparse.Namespace):
                     )
                     print(f"  -> New best AE[{label}] saved to {ckpt_path}")
 
-        train_one_ae(encoder_clean, encode_graph_embeddings_clean, clean_train_loader, clean_val_loader, ae_clean_ckpt_path, label="clean")
-        train_one_ae(encoder_noisy, encode_graph_embeddings_noisy, noisy_train_loader, noisy_val_loader, ae_noisy_ckpt_path, label="noisy")
+        train_one_ae(
+            encoder_clean,
+            encode_graph_embeddings_clean,
+            clean_train_loader,
+            clean_val_loader,
+            ae_clean_ckpt_path,
+            label="clean",
+        )
+        train_one_ae(
+            encoder_noisy,
+            encode_graph_embeddings_noisy,
+            noisy_train_loader,
+            noisy_val_loader,
+            ae_noisy_ckpt_path,
+            label="noisy",
+        )
 
     # ---------------- Freeze encoders for stage 2 ----------------
     _set_requires_grad(encoder_clean, False)
@@ -509,13 +550,11 @@ def run_task(args: argparse.Namespace):
     if args.train_stage2:
         print("Stage 2: training with CLEAN as canonical; updating ONLY the intended modules per loop...")
 
-        # Risk optimizer updates risk_head (+ proj_clean if enabled).
         risk_params = list(risk_head.parameters())
         if proj_clean is not None:
             risk_params += list(proj_clean.parameters())
         opt_risk = torch.optim.Adam(risk_params, lr=args.stage2_lr, weight_decay=args.stage2_weight_decay)
 
-        # Align optimizer updates proj_noisy only.
         opt_align = torch.optim.Adam(list(proj_noisy.parameters()), lr=args.stage2_lr, weight_decay=args.stage2_weight_decay)
 
         if args.train_noisy_proj_only and (not args.load_risk_head):
@@ -583,7 +622,6 @@ def run_task(args: argparse.Namespace):
                 batch_c, _z, _fl, _el, g_c = encode_graph_embeddings_clean(batch_c)
                 batch_n, _z2, _fl2, _el2, g_n = encode_graph_embeddings_noisy(batch_n)
 
-                # Canonical target embedding from clean
                 t_c = proj_clean(g_c) if proj_clean is not None else g_c
                 s_n = proj_noisy(g_n)
 
@@ -596,10 +634,9 @@ def run_task(args: argparse.Namespace):
 
                 l_cons = torch.tensor(0.0, device=device)
                 if args.consistency_weight > 0.0:
-                    # teacher: clean -> risk_head (no grad); student: noisy mapped -> risk_head (no grad to head)
                     with torch.no_grad():
                         logits_teacher = risk_head(t_c)
-                    logits_student = risk_head(s_n)  # grads flow into s_n -> proj_noisy only (risk_head frozen)
+                    logits_student = risk_head(s_n)
                     l_cons = _paired_consistency_loss(
                         logits_teacher=logits_teacher,
                         logits_student=logits_student,
@@ -628,7 +665,6 @@ def run_task(args: argparse.Namespace):
                 proj_clean.eval()
             proj_noisy.eval()
 
-            # (A) val risk on clean
             v_risk_sum = 0.0
             v_risk_steps = 0
             v_correct = 0
@@ -658,7 +694,6 @@ def run_task(args: argparse.Namespace):
             val_risk = v_risk_sum / max(v_risk_steps, 1)
             val_acc = (v_correct / max(v_seen, 1)) if args.prediction_mode == "classification" else None
 
-            # (B) val align/cons on paired anchors (logging only)
             v_align_sum = 0.0
             v_cons_sum = 0.0
             v_steps2 = 0
@@ -682,12 +717,14 @@ def run_task(args: argparse.Namespace):
                     if args.consistency_weight > 0.0:
                         logits_teacher = risk_head(t_c)
                         logits_student = risk_head(s_n)
-                        l_cons = float(_paired_consistency_loss(
-                            logits_teacher=logits_teacher,
-                            logits_student=logits_student,
-                            mode=args.prediction_mode,
-                            kind=args.consistency_kind,
-                        ).item())
+                        l_cons = float(
+                            _paired_consistency_loss(
+                                logits_teacher=logits_teacher,
+                                logits_student=logits_student,
+                                mode=args.prediction_mode,
+                                kind=args.consistency_kind,
+                            ).item()
+                        )
 
                     v_align_sum += float(l_align.item())
                     v_cons_sum += float(l_cons)
@@ -791,7 +828,6 @@ def run_task(args: argparse.Namespace):
         proj_noisy.eval()
         risk_head.eval()
 
-        # optional proj_clean
         proj_clean_eval = None
         if bool(ckpt.get("use_proj_clean", False)):
             proj_clean_eval = ProjectionHead(
@@ -883,7 +919,7 @@ def run_task(args: argparse.Namespace):
             y_true_np = np.concatenate(y_true_all)
             y_pred_np = np.concatenate(y_pred_all)
 
-            metrics = {f"{domain}/loss": avg_loss}
+            local_metrics = {f"{domain}/loss": avg_loss}
 
             if args.prediction_mode == "classification":
                 cm = confusion_matrix(y_true_np, y_pred_np, labels=range(args.num_classes))
@@ -891,16 +927,16 @@ def run_task(args: argparse.Namespace):
                 cls_metrics["ordinal_mae_bins"] = mean_absolute_error(y_true_np, y_pred_np)
                 cls_metrics["qwk"] = cohen_kappa_score(y_true_np, y_pred_np, weights="quadratic")
                 cm_list = cls_metrics.pop("confusion_matrix")
-                metrics.update({f"{domain}/{k}": v for k, v in cls_metrics.items()})
-                return metrics, cm_list
+                local_metrics.update({f"{domain}/{k}": v for k, v in cls_metrics.items()})
+                return local_metrics, cm_list
             else:
-                metrics[f"{domain}/mae"] = mean_absolute_error(y_true_np, y_pred_np)
-                metrics[f"{domain}/rmse"] = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
-                metrics[f"{domain}/r2"] = r2_score(y_true_np, y_pred_np)
+                local_metrics[f"{domain}/mae"] = mean_absolute_error(y_true_np, y_pred_np)
+                local_metrics[f"{domain}/rmse"] = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
+                local_metrics[f"{domain}/r2"] = r2_score(y_true_np, y_pred_np)
                 rho, pval = spearmanr(y_true_np, y_pred_np)
-                metrics[f"{domain}/spearman_rho"] = rho
-                metrics[f"{domain}/spearman_p"] = pval
-                return metrics, None
+                local_metrics[f"{domain}/spearman_rho"] = rho
+                local_metrics[f"{domain}/spearman_p"] = pval
+                return local_metrics, None
 
         clean_metrics, clean_cm = eval_one(clean_eval_loader, "clean")
         noisy_metrics, noisy_cm = eval_one(noisy_eval_loader, "noisy")
@@ -957,9 +993,8 @@ def run_task(args: argparse.Namespace):
         noise_pct=args.noisy,
         seed=args.seed,
         metrics=metrics,
-        domain=None, # 5A produces both clean and noisy metrics
+        domain=None,
     )
-
 
 
 if __name__ == "__main__":
@@ -976,7 +1011,6 @@ if __name__ == "__main__":
     # Dataset type
     parser.add_argument("--clean", type=int, required=True, help="Percentage of anchor samples from the noisy_true dataset.")
     parser.add_argument("--noisy", type=int, required=True, help="Percentage of noise in the noisy dataset (e.g., 10, 20).")
-
 
     # Model (AEs)
     parser.add_argument("--mode", type=str, default="all")
@@ -1021,6 +1055,18 @@ if __name__ == "__main__":
     parser.add_argument("--ae_epochs", type=int, default=10)
     parser.add_argument("--ae_lr", type=float, default=1e-4)
     parser.add_argument("--ae_weight_decay", type=float, default=1e-5)
+    parser.add_argument(
+        "--init_ae_clean_checkpoint",
+        type=str,
+        default=None,
+        help="Optional checkpoint to initialize the CLEAN autoencoder from before Stage 1 training.",
+    )
+    parser.add_argument(
+        "--init_ae_noisy_checkpoint",
+        type=str,
+        default=None,
+        help="Optional checkpoint to initialize the NOISY autoencoder from before Stage 1 training.",
+    )
 
     # Load AE checkpoints
     parser.add_argument("--load_best_ae_clean", action="store_true")

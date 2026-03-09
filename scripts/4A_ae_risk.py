@@ -10,19 +10,48 @@ from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader
 from scipy.stats import spearmanr
 import wandb
-from sklearn.metrics import (mean_absolute_error,cohen_kappa_score,mean_squared_error,r2_score,confusion_matrix,)
+from sklearn.metrics import (
+    mean_absolute_error,
+    cohen_kappa_score,
+    mean_squared_error,
+    r2_score,
+    confusion_matrix,
+)
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.graph_encoding.data_loaders import get_graph_dataset
-from src.graph_encoding.autoencoder import (HeteroGraphAutoencoder,batched_graph_embeddings,QuantileFeatureQuantizer,
-                                            feature_loss,edge_loss,)
+from src.graph_encoding.autoencoder import (
+    HeteroGraphAutoencoder,
+    batched_graph_embeddings,
+    QuantileFeatureQuantizer,
+    feature_loss,
+    edge_loss,
+)
 from src.graph_encoding.risk_prediction import RiskPredictionHead
-from src.experiment_utils import (set_seed,seed_worker,risk_to_class_safe,infer_graph_emb_dim,apply_yaml_overrides,
-                                  resolve_paths,_format_confusion_matrix,_print_access,_require_dir,_require_file,
-                                  _make_fallback_run_id,_ensure_dir,classification_metrics_from_cm,log_annotations,)
+from src.experiment_utils import (
+    set_seed,
+    seed_worker,
+    risk_to_class_safe,
+    infer_graph_emb_dim,
+    apply_yaml_overrides,
+    resolve_paths,
+    _format_confusion_matrix,
+    _print_access,
+    _require_dir,
+    _require_file,
+    _make_fallback_run_id,
+    _ensure_dir,
+    classification_metrics_from_cm,
+    log_annotations,
+)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def run_task(args: argparse.Namespace):
+    metrics = {}
+
     is_eval_only_flag = bool(args.evaluate) and not bool(args.train_autoencoder) and not bool(args.train_risk)
     if is_eval_only_flag:
         original_best_model_path = args.best_model_path
@@ -62,12 +91,12 @@ def run_task(args: argparse.Namespace):
 
     # ---------------- CLI / seed / dataset enforcement ----------------
     set_seed(args.seed)
-    
+
     if args.l2d:
         args.data_root = os.path.join("data", "L2D")
     elif args.nup:
         args.data_root = os.path.join("data", "NuPlan")
-    
+
     args.data_root = os.path.abspath(args.data_root)
 
     dataset_name = ""
@@ -120,7 +149,7 @@ def run_task(args: argparse.Namespace):
             else:
                 risk_ckpt_name = os.path.basename(args.best_model_path)
             best_model_path = os.path.join(run_dir, risk_ckpt_name)
-        
+
         ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
         if wandb_run is not None:
@@ -145,14 +174,21 @@ def run_task(args: argparse.Namespace):
     )
 
     print("Fitting quantizer on TRAIN dataset...")
-    quantizer = QuantileFeatureQuantizer(bins=args.quant_bins, node_types=train_dataset_full.get_metadata()[0])
+    quantizer = QuantileFeatureQuantizer(
+        bins=args.quant_bins,
+        node_types=train_dataset_full.get_metadata()[0],
+    )
     quantizer.fit(train_dataset_full)
 
     # Deterministic split (same split used for AE training and risk-head training)
     val_size = int(args.val_fraction * len(train_dataset_full))
     train_size = len(train_dataset_full) - val_size
     split_gen = torch.Generator().manual_seed(args.seed)
-    train_dataset, val_dataset = random_split(train_dataset_full, [train_size, val_size], generator=split_gen)
+    train_dataset, val_dataset = random_split(
+        train_dataset_full,
+        [train_size, val_size],
+        generator=split_gen,
+    )
 
     loader_gen = torch.Generator().manual_seed(args.seed)
     common_loader_kwargs = dict(
@@ -194,7 +230,11 @@ def run_task(args: argparse.Namespace):
 
     # Infer graph embedding dim once (after encoder exists)
     graph_emb_dim = infer_graph_emb_dim(
-        encoder, quantizer, train_loader, metadata, embed_dim_per_type=args.embed_dim
+        encoder,
+        quantizer,
+        train_loader,
+        metadata,
+        embed_dim_per_type=args.embed_dim,
     )
     print(f"[info] inferred graph_emb_dim = {graph_emb_dim}")
 
@@ -208,6 +248,25 @@ def run_task(args: argparse.Namespace):
     ).to(device)
 
     risk_loss_fn = nn.MSELoss() if args.prediction_mode == "regression" else nn.CrossEntropyLoss()
+
+    # ---------------- Optional AE initialization for Stage 1 ----------------
+    def maybe_load_ae_init_checkpoint():
+        if args.init_ae_checkpoint is None:
+            return
+
+        init_ckpt_path = os.path.abspath(args.init_ae_checkpoint)
+        _require_file(init_ckpt_path, "Initialization checkpoint (--init_ae_checkpoint)")
+        init_ckpt = torch.load(init_ckpt_path, map_location=device, weights_only=False)
+
+        if "encoder_state_dict" not in init_ckpt:
+            raise KeyError(
+                f"Checkpoint at {init_ckpt_path} does not contain 'encoder_state_dict'."
+            )
+
+        encoder.load_state_dict(init_ckpt["encoder_state_dict"], strict=True)
+        print(f"[ok] initialized encoder for Stage 1 from checkpoint: {init_ckpt_path}")
+
+    maybe_load_ae_init_checkpoint()
 
     def encode_graph_embeddings(batch):
         batch = quantizer.transform_inplace(batch).to(device)
@@ -484,16 +543,16 @@ def run_task(args: argparse.Namespace):
             cls_metrics = classification_metrics_from_cm(cm)
 
             cls_metrics["ordinal_mae_bins"] = mean_absolute_error(y_true_np, y_pred_np)
-            cls_metrics["qwk"] = cohen_kappa_score(y_true_np, y_pred_np, weights='quadratic')
+            cls_metrics["qwk"] = cohen_kappa_score(y_true_np, y_pred_np, weights="quadratic")
 
             metrics.update(cls_metrics)
             cm_list = metrics.pop("confusion_matrix")
 
             print(f"\n========== {dataset_name} evaluation results ==========")
             for k, v in sorted(metrics.items()):
-                 if isinstance(v, list):
+                if isinstance(v, list):
                     print(f"{k}: {v}")
-                 else:
+                else:
                     print(f"{k}: {v:.4f}")
 
             print("\nConfusion matrix (rows=true, cols=pred):")
@@ -552,19 +611,24 @@ def run_task(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="4Ba: Autoencoder (reconstruction) then risk head (encoder frozen).")
+    parser = argparse.ArgumentParser(
+        description="4Ba: Autoencoder (reconstruction) then risk head (encoder frozen)."
+    )
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--l2d", action="store_true", help="Use L2D dataset.")
     group.add_argument("--nup", action="store_true", help="Use NuPlan dataset.")
-    
-    parser.add_argument("--data_root", type=str, help="Root directory of the dataset.")
 
+    parser.add_argument("--data_root", type=str, help="Root directory of the dataset.")
 
     # Dataset select
     dataset_group = parser.add_mutually_exclusive_group(required=True)
     dataset_group.add_argument("--clean", action="store_true", help="Use clean data.")
-    dataset_group.add_argument("--noisy", type=int, help="Use noisy data with a specified percentage (e.g., 10, 20).")
+    dataset_group.add_argument(
+        "--noisy",
+        type=int,
+        help="Use noisy data with a specified percentage (e.g., 10, 20).",
+    )
 
     parser.add_argument("--with_side_information", action="store_true")
 
@@ -579,7 +643,12 @@ if __name__ == "__main__":
 
     # Risk head
     parser.add_argument("--risk_hidden_dim", type=int, default=64)
-    parser.add_argument("--prediction_mode", type=str, default="classification", choices=["regression", "classification"])
+    parser.add_argument(
+        "--prediction_mode",
+        type=str,
+        default="classification",
+        choices=["regression", "classification"],
+    )
     parser.add_argument("--num_classes", type=int, default=4)
 
     # Loader / split
@@ -593,7 +662,17 @@ if __name__ == "__main__":
     parser.add_argument("--ae_epochs", type=int, default=10)
     parser.add_argument("--ae_lr", type=float, default=1e-4)
     parser.add_argument("--ae_weight_decay", type=float, default=1e-5)
-    parser.add_argument("--load_best_ae", action="store_true", help="Load *_ae_best_model.pt before training risk/eval")
+    parser.add_argument(
+        "--load_best_ae",
+        action="store_true",
+        help="Load *_ae_best_model.pt before training risk/eval",
+    )
+    parser.add_argument(
+        "--init_ae_checkpoint",
+        type=str,
+        default=None,
+        help="Optional checkpoint to initialize the autoencoder from before Stage 1 training.",
+    )
 
     # Stage 2: risk training
     parser.add_argument("--train_risk", action="store_true")
@@ -611,10 +690,20 @@ if __name__ == "__main__":
 
     # Output / misc
     parser.add_argument("--best_model_path", type=str, default="./models/risk_predictor/best_model.pt")
-    parser.add_argument("--output_root", type=str, default="./outputs", help="Root dir for per-run outputs (no overwrites).")
+    parser.add_argument(
+        "--output_root",
+        type=str,
+        default="./outputs",
+        help="Root dir for per-run outputs (no overwrites).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--load_config", type=str, default=None)
-    parser.add_argument("--run_id", type=str, default=None, help="Optional: force a specific run_id (prevents random local-* ids).")
+    parser.add_argument(
+        "--run_id",
+        type=str,
+        default=None,
+        help="Optional: force a specific run_id (prevents random local-* ids).",
+    )
 
     args = parser.parse_args()
     args = apply_yaml_overrides(parser, args)

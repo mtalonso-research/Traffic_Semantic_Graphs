@@ -1,0 +1,127 @@
+program: scripts/5A_ust_risk.py
+method: bayes
+metric:
+  name: stage2/val_risk
+  goal: minimize
+
+parameters:
+  # Fixed dataset/setup
+  nup:
+    value: true
+  clean:
+    value: 10
+  noisy:
+    value: 20
+
+  # Train both stages
+  train_autoencoders:
+    value: true
+  train_stage2:
+    value: true
+  evaluate:
+    value: false
+  wandb:
+    value: true
+
+  # Keep defaults fixed
+  mode:
+    value: all
+  quant_bins:
+    value: 32
+  prediction_mode:
+    value: classification
+  num_classes:
+    value: 4
+
+  # AE architecture / training
+  hidden_dim:
+    values: [32, 64, 128]
+  embed_dim:
+    values: [16, 32, 64]
+  num_encoder_layers:
+    values: [1, 2]
+  num_decoder_layers:
+    values: [1, 2]
+  activation:
+    values: [relu]
+  dropout_rate:
+    values: [0.0, 0.1, 0.2]
+
+  ae_epochs:
+    values: [10, 20, 30]
+  ae_lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 5e-4
+  ae_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+
+  # Risk/projection stage
+  risk_hidden_dim:
+    values: [32, 64, 128]
+  use_proj_clean:
+    values: [true, false]
+  proj_hidden_dim:
+    values: [0, 64, 128]
+  proj_dropout:
+    values: [0.0, 0.1, 0.2]
+  proj_activation:
+    values: [relu, gelu]
+  proj_residual:
+    values: [true, false]
+  proj_l2_normalize:
+    values: [true, false]
+
+  align_weight:
+    distribution: uniform
+    min: 0.1
+    max: 3.0
+  align_loss_kind:
+    values: [l2, smoothl1, cosine]
+
+  consistency_weight:
+    values: [0.0, 0.1, 0.3, 1.0]
+  consistency_kind:
+    values: [kl, mse]
+
+  stage2_epochs:
+    values: [10, 20, 30]
+  stage2_lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 5e-4
+  stage2_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+
+  # Loader / split
+  batch_size:
+    values: [8, 16]
+  val_fraction:
+    value: 0.2
+  num_workers:
+    value: 4
+
+  # Reproducibility
+  seed:
+    values: [42, 123, 999]
+
+  # Keep output behavior fixed
+  output_root:
+    value: ./outputs
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --nup
+  - --clean
+  - "10"
+  - --noisy
+  - "20"
+  - --train_autoencoders
+  - --train_stage2
+  - --wandb
