@@ -51,6 +51,12 @@ The `nuplan` environment is specifically used for running the NuPlan data proces
 3.  **Install Hardware-Specific Packages:**
     After activating the environment, install PyTorch and its related packages. Please visit the [Official PyTorch Website](https://pytorch.org/get-started/locally/) to find the correct installation command for your specific system (OS, package manager, CUDA version). You will need to install `torch`, `pytorch-lightning`, and `torchmetrics`.
 
+### `nuplan` Environment from a requirements file
+Replicate our environment
+1. `conda create -n nuplan python=3.9`
+2. Install torch==2.8.0 from [Official PyTorch Website](https://pytorch.org/get-started/previous-versions/)
+3. `pip install -r environments/nuplan_env_requirements.txt`
+
 #### `sem_graphs` Environment
 
 The `sem_graphs` environment is used for all other scripts in the pipeline.
@@ -89,6 +95,16 @@ TRAFFIC_SEMANTIC_GRAPHS/
 │   └── experiment_utils.py          # Training and eval helpers
 └── README.md                        # This file
 ```
+<<<<<<< HEAD
+=======
+**Note:** The actual data files are not included in the repository due to storage limitations.
+## How to run
+1. Download the dataset from [Google Drive](https://drive.google.com/file/d/1PRaol3vGN9_hElHU948hU_PghBrHng5c/view?usp=sharing)
+2. In the root directory `tar -xzf nuplan_clean.tar.gz`
+3. Setup `nuplan` python environment
+3. Run `bash run.sh` 
+For more control follow the steps below
+>>>>>>> 0b6248f (docs: added datasaet + instructions how to run a code)
 
 ## Phase 1: Data Processing
 
@@ -272,3 +288,23 @@ To plot a histogram of a specific feature:
 ```bash
 python -m scripts.visualizer --histogram ego-vx
 ```
+
+### Model Performance
+| σ (Noise Std) | Clean Only | Noisy Only | UST      |
+|--------------|------------|------------|----------|
+| 1            | 39.15%     | 36.31%     | **41.41%** |
+| 2            | 39.15%     | 37.59%     | **40.95%** |
+| 3            | 39.15%     | 36.55%     | **41.97%** |
+| 4            | 39.15%     | 36.84%     | **40.79%** |
+| 5            | 39.15%     | 33.59%     | **41.46%** |
+| 10           | 39.15%     | 38.45%     | **40.32%** |
+| 50           | 44.97%     | 28.95%     | **45.43%** |
+___
+### Learning Curves Examples
+![Figure 1](models/BaselineB/clean/clean_seed1234_ae_best_model_ae_total_loss.png)
+**Figure 1: Displays training progress of the BaselineB autoencoder trained on clean dataset. Total Reconstruction Loss = Feature Loss + Edge Loss.**
+
+![Figure 2](models/BaselineB/clean/clean_seed1234_ae_best_model_ae_edge_loss_per_type.png)
+**Figure 2: Displays training progress of the BaselineB autoencoder trained on clean dataset. Reconstruction losses are displayed per edge type; 4 edge types**
+
+![Figure 3]()

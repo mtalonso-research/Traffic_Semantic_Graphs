@@ -1,7 +1,9 @@
 import subprocess
 import argparse
 from tqdm import tqdm
-
+import logging
+from utils.custom_logging import CustomFormatter
+logger = logging.getLogger(__name__)
 
 def _build_args_from_config(config: dict, arg_map: dict) -> list[str]:
     """Convert config dict into a flat CLI arg list using arg_map."""
@@ -115,6 +117,8 @@ def run_experiment_baselineb(config, verbose=False):
 
     args = _build_args_from_config(config, arg_map)
     full_command = base_command + args
+    full_command_text = " ".join(full_command)
+    logger.debug(full_command_text)
     return _run_command(full_command, verbose=verbose)
 
 
@@ -235,6 +239,7 @@ def experiment_loop(
 
     if exp == "BaselineB":
         total_runs = len(noises) * len(seeds)
+        logger.info(f"Total runs: {total_runs}")
         pbar = tqdm(total=total_runs, desc="Running BaselineB Experiments") if not verbose else None
 
         for noise in noises:
@@ -281,7 +286,12 @@ def experiment_loop(
             if zero_workers:
                 base_config["num_workers"] = 0
 
+            # Create a readable summary for base_config
+            base_config_text = "\n".join([f"\t{key}:{value}" for key, value in base_config.items()])
+            logger.debug(f"Config for noise={noise}:\n{base_config_text}")
+
             for seed_value in seeds:
+                logger.info(f"Seed:{seed_value}")
                 if pbar:
                     pbar.set_description(f"BaselineB (noise={noise}, seed={seed_value})")
 
@@ -292,6 +302,7 @@ def experiment_loop(
                     f'{"clean" if noise == 0 else f"noisy{noise}"}/'
                     f'{"clean" if noise == 0 else f"noisy{noise}"}_seed{seed_value}.pt'
                 )
+                logger.info(f"best_model_path: {current_config['best_model_path']}")
 
                 rc = run_experiment_baselineb(current_config, verbose=verbose)
                 if rc != 0 and pbar:
@@ -377,6 +388,12 @@ def experiment_loop(
 
 
 if __name__ == "__main__":
+    logger.setLevel(logging.DEBUG) # For now I always run in debug mode
+    file_handler = logging.FileHandler("logging.log", mode="w")
+    file_handler.setFormatter(CustomFormatter())
+    logger.addHandler(file_handler)
+    logger.info("Started")
+
     parser = argparse.ArgumentParser(description="Run a series of experiments.")
     parser.add_argument("--experiment", choices=["BaselineB", "UST"], required=True)
     parser.add_argument("--noises", nargs="+", type=int)
@@ -386,11 +403,16 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    # Create a readable summary of args
+    args_text = "\n".join([f"\t{key}: {value}"for key, value in vars(args).items()])
+    logger.info(f"Passing arguments:\n{args_text}")
+
     kwargs = {
         "exp": args.experiment,
         "zero_workers": args.zero_workers,
         "verbose": args.verbose,
     }
+
     if args.noises is not None:
         kwargs["noises"] = args.noises
     if args.seeds is not None:
@@ -398,4 +420,9 @@ if __name__ == "__main__":
     if args.anchors is not None:
         kwargs["anchors"] = args.anchors
 
+    # Create a readable summary of kwargs
+    kwargs_text="\n".join([f"\t{key}: {value}" for key, value in kwargs.items()])
+    logger.debug(f"Arugments passed to experiment loop:\n{kwargs_text}")
     experiment_loop(**kwargs)
+
+    logging.info("Finished")

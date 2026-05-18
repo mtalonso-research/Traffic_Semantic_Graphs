@@ -129,7 +129,8 @@ class QuantileFeatureQuantizer:
             xs = []
             for f in range(x.size(1)):
                 # indices in [0..B-1]
-                xi = torch.bucketize(x[:, f], boundaries=edges[f], right=False)
+                # xi = torch.bucketize(x[:, f], boundaries=edges[f], right=False)
+                xi = torch.bucketize(x[:, f].contiguous(), boundaries=edges[f], right=False)
                 xs.append(xi.view(-1, 1))
             hetero[nt][self.key] = torch.cat(xs, dim=1).long()
         return hetero
@@ -417,9 +418,18 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
         any_device = next(iter(z_dict.values())).device if z_dict else "cpu"
         return torch.tensor(0.0, device=any_device)
 
-    loss = 0.0
-    count = 0
+    num_neg = max(1, int(num_neg))
+
+    # loss = 0.0
+    loss_per_key, count_per_key = {}, {}
+    loss_per_key["total"] = 0.0
+    count_per_key["total"] = 0
     for key, pos_score in edge_logits.items():
+        if key not in loss_per_key.keys():
+            loss_per_key[key] = 0.0
+        if key not in count_per_key.keys():
+            count_per_key[key] = 0
+
         srctype, rel, dsttype = key
         if srctype not in z_dict or dsttype not in z_dict:
             continue
@@ -428,26 +438,37 @@ def edge_loss(edge_logits, z_dict, edge_decoders, num_neg=1):
 
         pos_label = torch.ones_like(pos_score)
 
-        # Negative samples: same count as positives
+        # Negative samples: configurable ratio to positives.
         num_src = z_dict[srctype].size(0)
         num_dst = z_dict[dsttype].size(0)
         if num_src == 0 or num_dst == 0:
             continue
 
-        neg_src = torch.randint(0, num_src, (pos_score.size(0),), device=pos_score.device)
-        neg_dst = torch.randint(0, num_dst, (pos_score.size(0),), device=pos_score.device)
+        n_neg = pos_score.size(0) * num_neg
+        neg_src = torch.randint(0, num_src, (n_neg,), device=pos_score.device)
+        neg_dst = torch.randint(0, num_dst, (n_neg,), device=pos_score.device)
         neg_score = edge_decoders[str(key)](z_dict[srctype][neg_src], z_dict[dsttype][neg_dst]).squeeze(-1)
         neg_label = torch.zeros_like(neg_score)
 
         all_scores = torch.cat([pos_score, neg_score], dim=0)
         all_labels = torch.cat([pos_label, neg_label], dim=0)
-        loss += F.binary_cross_entropy_with_logits(all_scores, all_labels)
-        count += 1
 
-    if count == 0:
+        # Calc loss
+        loss_per_key[key] += F.binary_cross_entropy_with_logits(all_scores, all_labels).item()
+        count_per_key[key] += 1
+
+        # total loss
+        loss_per_key["total"] += F.binary_cross_entropy_with_logits(all_scores, all_labels)
+        count_per_key["total"] += 1
+
+    if count_per_key["total"] == 0:
         any_device = next(iter(z_dict.values())).device if z_dict else "cpu"
         return torch.tensor(0.0, device=any_device)
-    return loss / count
+
+    for key in loss_per_key.keys():
+        if count_per_key[key] > 0:
+            loss_per_key[key] /= count_per_key[key]
+    return loss_per_key
 '''
 def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     mu1, mu2 = z1.mean(0), z2.mean(0)
@@ -461,6 +482,12 @@ def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     )
     return kl
 '''
+def calculate_loss_per_key(recorded_loss, calculated_loss):
+    # calculate loss except total
+    for key, value in calculated_loss.items():
+        if key != "total":
+            recorded_loss[key] += float(value)
+
 def kl_divergence_between_gaussians(z1, z2, eps=1e-6):
     # z1,z2: [B,D]
     mu1, mu2 = z1.mean(dim=0), z2.mean(dim=0)

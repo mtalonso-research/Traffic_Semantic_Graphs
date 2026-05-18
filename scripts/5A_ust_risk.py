@@ -17,7 +17,7 @@ from sklearn.metrics import (
     r2_score,
     confusion_matrix,
 )
-
+from sklearn.neighbors import NearestNeighbors
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.graph_encoding.data_loaders import get_graph_dataset
@@ -190,19 +190,95 @@ def run_task(args: argparse.Namespace):
     num_anchors = int((args.clean / 100) * num_base_clean)
     print("NUM ANCHORS", num_anchors)
     num_to_keep_from_clean = num_base_clean - num_anchors
+    # Anchor selection strategies: random (existing), top_risk, bottom_risk, stratified, nn
+    def _extract_risks_from_dataset(ds):
+        # returns numpy array of risks aligned with dataset indices
+        risks = []
+        for fname in ds.graph_filenames:
+            ep = fname.split('_')[0]
+            risks.append(float(ds.risk_scores.get(ep, 0.0)))
+        return np.array(risks, dtype=float)
 
+    anchor_nn_pending = False
     if num_anchors > 0:
-        clean_indices = np.random.permutation(num_base_clean)
-        keep_clean_indices = clean_indices[:num_to_keep_from_clean]
+        strat = getattr(args, "anchor_strategy", "random")
+        rng = np.random.RandomState(args.seed)
 
-        noisy_true_indices = np.random.permutation(len(noisy_true_dataset_full))
-        anchor_indices = noisy_true_indices[:num_anchors]
+        # We'll select anchors from noisy_true_dataset_full according to strategy
+        n_noisy_true = len(noisy_true_dataset_full)
+        if n_noisy_true == 0:
+            raise SystemExit("No samples in noisy_true dataset to use as anchors.")
 
-        clean_subset = Subset(base_clean_dataset_full, keep_clean_indices)
-        anchor_subset = Subset(noisy_true_dataset_full, anchor_indices)
+        if strat == "nn":
+            # Defer selection until we can compute embeddings (after AEs are initialized/loaded)
+            anchor_nn_pending = True
+            # For now use base_clean as the clean set; actual anchors will be selected later.
+            clean_dataset_full = base_clean_dataset_full
+            print(f"[info] Deferring NN anchor selection until embeddings are available (seed={args.seed}).")
 
-        clean_dataset_full = ConcatDataset([clean_subset, anchor_subset])
-        print(f"[info] Created final clean dataset with {len(clean_subset)} clean samples and {len(anchor_subset)} anchors.")
+        elif strat == "random":
+            # Indices to keep from base clean
+            clean_indices = rng.permutation(num_base_clean)
+            keep_clean_indices = clean_indices[:num_to_keep_from_clean]
+            # Indices for anchors from noisy_true
+            perm = rng.permutation(n_noisy_true)
+            anchor_indices = perm[:num_anchors]
+            clean_subset = Subset(base_clean_dataset_full, keep_clean_indices)
+            anchor_subset = Subset(noisy_true_dataset_full, anchor_indices)
+            clean_dataset_full = ConcatDataset([clean_subset, anchor_subset])
+            print(f"[info] Created final clean dataset with {len(clean_subset)} clean samples and {len(anchor_subset)} anchors (strategy=random).")
+
+        elif strat in ("top_risk", "bottom_risk"):
+            noisy_risks = _extract_risks_from_dataset(noisy_true_dataset_full)
+            order = np.argsort(noisy_risks)
+            if strat == "top_risk":
+                order = order[::-1]
+            anchor_indices = order[:num_anchors]
+            clean_subset = Subset(base_clean_dataset_full, np.arange(num_to_keep_from_clean))
+            anchor_subset = Subset(noisy_true_dataset_full, anchor_indices)
+            clean_dataset_full = ConcatDataset([clean_subset, anchor_subset])
+            print(f"[info] Created final clean dataset with {len(clean_subset)} clean samples and {len(anchor_subset)} anchors (strategy={strat}).")
+
+        elif strat == "stratified":
+            # Aim to match the clean-risk distribution: compute bins from base_clean
+            clean_risks = _extract_risks_from_dataset(base_clean_dataset_full)
+            noisy_risks = _extract_risks_from_dataset(noisy_true_dataset_full)
+            bins = getattr(args, "anchor_strat_bins", 5)
+            # Compute counts per bin desired from clean set
+            clean_bins = np.nanquantile(clean_risks, np.linspace(0, 1, bins + 1))
+            inds_per_bin = []
+            for i in range(bins):
+                lo, hi = clean_bins[i], clean_bins[i + 1]
+                # desired fraction = fraction of clean samples in this bin
+                mask_clean = (clean_risks >= lo) & (clean_risks <= hi)
+                frac = mask_clean.sum() / max(len(clean_risks), 1)
+                take = int(round(frac * num_anchors))
+                # find candidates in noisy_true within the same bin
+                mask_noisy = (noisy_risks >= lo) & (noisy_risks <= hi)
+                candidates = np.where(mask_noisy)[0]
+                if len(candidates) == 0:
+                    continue
+                chosen = rng.choice(candidates, size=min(take, len(candidates)), replace=False)
+                inds_per_bin.append(chosen)
+            if len(np.concatenate(inds_per_bin)) < num_anchors:
+                # fallback: fill remaining randomly
+                already = set(np.concatenate(inds_per_bin).tolist()) if inds_per_bin else set()
+                needed = num_anchors - len(already)
+                pool = [i for i in range(n_noisy_true) if i not in already]
+                if len(pool) > 0 and needed > 0:
+                    fill = rng.choice(pool, size=min(needed, len(pool)), replace=False)
+                    anchor_indices = np.concatenate([np.concatenate(inds_per_bin) if inds_per_bin else np.array([], dtype=int), fill])
+                else:
+                    anchor_indices = np.concatenate(inds_per_bin) if inds_per_bin else np.array([], dtype=int)
+            else:
+                anchor_indices = np.concatenate(inds_per_bin)[:num_anchors]
+            clean_subset = Subset(base_clean_dataset_full, np.arange(num_to_keep_from_clean))
+            anchor_subset = Subset(noisy_true_dataset_full, anchor_indices)
+            clean_dataset_full = ConcatDataset([clean_subset, anchor_subset])
+            print(f"[info] Created final clean dataset with {len(clean_subset)} clean samples and {len(anchor_subset)} anchors (strategy=stratified).")
+
+        else:
+            raise SystemExit(f"Unknown anchor strategy: {strat}")
     else:
         clean_dataset_full = base_clean_dataset_full
         print("[info] Using base clean dataset without anchors.")
@@ -247,57 +323,70 @@ def run_task(args: argparse.Namespace):
     ae_clean_ckpt_path = os.path.join(run_dir, f"4Bb_{ds_clean_name}_ae_best_model.pt")
     ae_noisy_ckpt_path = os.path.join(run_dir, f"4Bb_{ds_noisy_name}_ae_best_model.pt")
 
+
     # ---------------- fit quantizers per domain ----------------
     print("Fitting quantizers on TRAIN datasets...")
     quant_clean = QuantileFeatureQuantizer(bins=args.quant_bins, node_types=meta_clean[0])
-    quant_clean.fit(clean_dataset_full)
+    # If NN anchoring is deferred we fit quant_clean on the base clean set first to compute embeddings,
+    # then later refit on the final clean_dataset_full after anchors are selected.
+    if anchor_nn_pending:
+        quant_clean.fit(base_clean_dataset_full)
+    else:
+        quant_clean.fit(clean_dataset_full)
     quant_noisy = QuantileFeatureQuantizer(bins=args.quant_bins, node_types=meta_noisy[0])
     quant_noisy.fit(noisy_dataset_full)
 
-    # ---------------- deterministic split per domain ----------------
+    # ---------------- deterministic split per domain (deferred for NN case)
     def split_dataset(ds, seed: int, val_fraction: float):
         val_size = int(val_fraction * len(ds))
         train_size = len(ds) - val_size
         gen = torch.Generator().manual_seed(seed)
         return random_split(ds, [train_size, val_size], generator=gen)
 
-    clean_train, clean_val = split_dataset(clean_dataset_full, args.seed, args.val_fraction)
-    noisy_train, noisy_val = split_dataset(noisy_dataset_full, args.seed, args.val_fraction)
+    if not anchor_nn_pending:
+        clean_train, clean_val = split_dataset(clean_dataset_full, args.seed, args.val_fraction)
+        noisy_train, noisy_val = split_dataset(noisy_dataset_full, args.seed, args.val_fraction)
 
-    loader_gen = torch.Generator().manual_seed(args.seed)
+        loader_gen = torch.Generator().manual_seed(args.seed)
 
-    common_loader_kwargs = dict(
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        worker_init_fn=seed_worker if args.num_workers > 0 else None,
-        generator=loader_gen,
-    )
-    clean_train_loader = DataLoader(clean_train, shuffle=True, **common_loader_kwargs)
-    clean_val_loader = DataLoader(clean_val, shuffle=False, **common_loader_kwargs)
-    noisy_train_loader = DataLoader(noisy_train, shuffle=True, **common_loader_kwargs)
-    noisy_val_loader = DataLoader(noisy_val, shuffle=False, **common_loader_kwargs)
+        common_loader_kwargs = dict(
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=loader_gen,
+        )
+        clean_train_loader = DataLoader(clean_train, shuffle=True, **common_loader_kwargs)
+        clean_val_loader = DataLoader(clean_val, shuffle=False, **common_loader_kwargs)
+        noisy_train_loader = DataLoader(noisy_train, shuffle=True, **common_loader_kwargs)
+        noisy_val_loader = DataLoader(noisy_val, shuffle=False, **common_loader_kwargs)
 
-    paired_train = PairedAnchorDataset(clean_train, noisy_train)
-    paired_val = PairedAnchorDataset(clean_val, noisy_val)
+    # Create paired anchor datasets/loaders only after train/val splits exist
+    if "clean_train" in locals() and "noisy_train" in locals():
+        paired_train = PairedAnchorDataset(clean_train, noisy_train)
+        paired_val = PairedAnchorDataset(clean_val, noisy_val)
 
-    paired_train_loader = DataLoader(
-        paired_train,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        worker_init_fn=seed_worker if args.num_workers > 0 else None,
-        generator=loader_gen,
-    )
-    paired_val_loader = DataLoader(
-        paired_val,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        worker_init_fn=seed_worker if args.num_workers > 0 else None,
-        generator=loader_gen,
-    )
+        paired_train_loader = DataLoader(
+            paired_train,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=loader_gen,
+        )
+        paired_val_loader = DataLoader(
+            paired_val,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=loader_gen,
+        )
 
-    print(f"[info] paired anchors: train={len(paired_train)} val={len(paired_val)}")
+        print(f"[info] paired anchors: train={len(paired_train)} val={len(paired_val)}")
+    else:
+        # Defer paired creation (will be created after NN anchor selection if needed)
+        paired_train = paired_val = None
+        paired_train_loader = paired_val_loader = None
 
     # ---------------- build AEs ----------------
     print("Initializing autoencoders...")
@@ -327,6 +416,19 @@ def run_task(args: argparse.Namespace):
         dropout_rate=args.dropout_rate,
         side_info_dim=0,
     ).to(device)
+
+    # If NN anchoring deferred splits earlier, create temporary loaders over full datasets
+    if 'clean_train_loader' not in locals():
+        tmp_gen = torch.Generator().manual_seed(args.seed)
+        tmp_loader_kwargs = dict(
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=tmp_gen,
+        )
+        clean_train_loader = DataLoader(base_clean_dataset_full, **tmp_loader_kwargs)
+        noisy_train_loader = DataLoader(noisy_dataset_full, **tmp_loader_kwargs)
 
     graph_emb_dim_clean = infer_graph_emb_dim(
         encoder_clean,
@@ -402,6 +504,91 @@ def run_task(args: argparse.Namespace):
         encoder_noisy.eval()
         print(f"[ok] loaded NOISY AE checkpoint: {args.ae_noisy_ckpt_path}")
 
+    # If NN anchor selection was requested, compute embeddings now and pick anchors
+    if 'anchor_nn_pending' in locals() and anchor_nn_pending:
+        print("[info] Computing embeddings for NN anchor selection...")
+        enc_batch_size = max(1, args.batch_size)
+        emb_clean_list = []
+        emb_noisy_list = []
+
+        # loaders for full datasets (no shuffle)
+        emb_loader_kwargs = dict(batch_size=enc_batch_size, shuffle=False, num_workers=args.num_workers, worker_init_fn=seed_worker if args.num_workers > 0 else None)
+        clean_emb_loader = DataLoader(base_clean_dataset_full, **emb_loader_kwargs)
+        noisy_emb_loader = DataLoader(noisy_true_dataset_full, **emb_loader_kwargs)
+
+        encoder_clean.eval()
+        encoder_noisy.eval()
+        with torch.no_grad():
+            for batch in tqdm(clean_emb_loader, desc="embeddings:clean"):
+                batch = quant_clean.transform_inplace(batch).to(device)
+                z_dict, _fl, _el = encoder_clean(batch)
+                g = batched_graph_embeddings(z_dict, batch, meta_clean, embed_dim_per_type=args.embed_dim)
+                emb_clean_list.append(g.cpu().numpy())
+            for batch in tqdm(noisy_emb_loader, desc="embeddings:noisy_true"):
+                batch = quant_noisy.transform_inplace(batch).to(device)
+                z_dict, _fl, _el = encoder_noisy(batch)
+                g = batched_graph_embeddings(z_dict, batch, meta_noisy, embed_dim_per_type=args.embed_dim)
+                emb_noisy_list.append(g.cpu().numpy())
+
+        emb_clean = np.concatenate(emb_clean_list, axis=0)
+        emb_noisy = np.concatenate(emb_noisy_list, axis=0)
+
+        print(f"[info] Clean embeddings shape: {emb_clean.shape}; Noisy_true embeddings shape: {emb_noisy.shape}")
+
+        # Nearest neighbor: find noisy samples closest to the clean distribution
+        nn_model = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(emb_clean)
+        dists, idxs = nn_model.kneighbors(emb_noisy)
+        dists = dists.reshape(-1)
+        anchor_order = np.argsort(dists)
+        anchor_indices = anchor_order[:num_anchors]
+
+        # Build final clean dataset (keep first num_to_keep_from_clean clean samples deterministically)
+        clean_subset = Subset(base_clean_dataset_full, np.arange(num_to_keep_from_clean))
+        anchor_subset = Subset(noisy_true_dataset_full, anchor_indices)
+        clean_dataset_full = ConcatDataset([clean_subset, anchor_subset])
+        print(f"[info] NN-selected {len(anchor_subset)} anchors (closest to clean).")
+
+        # Re-fit quantizer on the final clean dataset (includes anchors)
+        quant_clean.fit(clean_dataset_full)
+
+        # Now perform deterministic split and create loaders (same as non-NN path)
+        clean_train, clean_val = split_dataset(clean_dataset_full, args.seed, args.val_fraction)
+        noisy_train, noisy_val = split_dataset(noisy_dataset_full, args.seed, args.val_fraction)
+
+        loader_gen = torch.Generator().manual_seed(args.seed)
+        common_loader_kwargs = dict(
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=loader_gen,
+        )
+        clean_train_loader = DataLoader(clean_train, shuffle=True, **common_loader_kwargs)
+        clean_val_loader = DataLoader(clean_val, shuffle=False, **common_loader_kwargs)
+        noisy_train_loader = DataLoader(noisy_train, shuffle=True, **common_loader_kwargs)
+        noisy_val_loader = DataLoader(noisy_val, shuffle=False, **common_loader_kwargs)
+        # Create paired datasets/loaders now that splits exist
+        paired_train = PairedAnchorDataset(clean_train, noisy_train)
+        paired_val = PairedAnchorDataset(clean_val, noisy_val)
+
+        paired_train_loader = DataLoader(
+            paired_train,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=loader_gen,
+        )
+        paired_val_loader = DataLoader(
+            paired_val,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            worker_init_fn=seed_worker if args.num_workers > 0 else None,
+            generator=loader_gen,
+        )
+
+        print(f"[info] paired anchors: train={len(paired_train)} val={len(paired_val)}")
+
     # ---------------- Stage 1: train AEs (optional) ----------------
     if args.train_autoencoders:
         print(f"Stage 1/2: Training AUTOENCODERS for clean={ds_clean_name} and noisy={ds_noisy_name}...")
@@ -418,7 +605,8 @@ def run_task(args: argparse.Namespace):
                     opt.zero_grad()
                     batch, z, feat_logits, edge_logits, _g = encode_fn(batch)
                     l_feat = feature_loss(feat_logits, batch)
-                    l_edge = edge_loss(edge_logits, z, encoder.edge_decoders)
+                    l_edge_all = edge_loss(edge_logits, z, encoder.edge_decoders)
+                    l_edge = l_edge_all["total"]
                     loss = l_feat + l_edge
                     loss.backward()
                     opt.step()
@@ -433,7 +621,8 @@ def run_task(args: argparse.Namespace):
                     for batch in tqdm(val_loader, desc=f"AE[{label}] Epoch {epoch:02d} [val]"):
                         batch, z, feat_logits, edge_logits, _g = encode_fn(batch)
                         l_feat = feature_loss(feat_logits, batch)
-                        l_edge = edge_loss(edge_logits, z, encoder.edge_decoders)
+                        l_edge_all = edge_loss(edge_logits, z, encoder.edge_decoders)
+                        l_edge = l_edge_all["total"]
                         loss = l_feat + l_edge
                         vtotal += float(loss.item())
                         vn += 1
@@ -810,6 +999,7 @@ def run_task(args: argparse.Namespace):
                 print(f"  -> New best FIXED model saved to {main_ckpt_path}")
 
     # ---------------- EVALUATE ----------------
+    metrics=None
     if args.evaluate:
         print(f"Evaluating FIXED paired-anchor model: clean={ds_clean_name}, noisy={ds_noisy_name}...")
 
@@ -1011,6 +1201,22 @@ if __name__ == "__main__":
     # Dataset type
     parser.add_argument("--clean", type=int, required=True, help="Percentage of anchor samples from the noisy_true dataset.")
     parser.add_argument("--noisy", type=int, required=True, help="Percentage of noise in the noisy dataset (e.g., 10, 20).")
+
+    # Anchor selection strategy (default=random to preserve previous behavior)
+    parser.add_argument(
+        "--anchor_strategy",
+        type=str,
+        default="random",
+        choices=["random", "top_risk", "bottom_risk", "stratified", "nn"],
+        help="Strategy to select anchors from the noisy_true set: random, top_risk, bottom_risk, stratified, nn",
+    )
+    parser.add_argument(
+        "--anchor_strat_bins",
+        type=int,
+        default=5,
+        help="Number of bins to use for stratified anchor selection (only used if --anchor_strategy=stratified)",
+    )
+
 
     # Model (AEs)
     parser.add_argument("--mode", type=str, default="all")

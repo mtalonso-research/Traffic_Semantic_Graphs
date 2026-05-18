@@ -1,6 +1,7 @@
 import subprocess
 import argparse
 from tqdm import tqdm
+import pandas as pd
 
 
 def _build_args_from_config(config: dict, arg_map: dict) -> list[str]:
@@ -290,6 +291,13 @@ def experiment_loop(
     }
 
     if exp == "BaselineB":
+        rows=[]
+        for n in noises:
+            for s in seeds:
+                rows.append({"script":"BaselineB","anchor_pct":0,"noise_pct":n,"seed":s,"status":"pending"})
+        pd.DataFrame(rows).to_csv("experiment_results/df.csv", index=False)
+        print("File experimet_results/df.csv was created...")
+
         total_runs = len(noises) * len(seeds)
         pbar = tqdm(total=total_runs, desc="Running BaselineB Experiments") if not verbose else None
 

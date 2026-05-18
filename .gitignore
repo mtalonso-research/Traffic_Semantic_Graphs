@@ -81,3 +81,14 @@ Project_Organization_Sheet.numbers
 temp_fixing_dates_l2d.py
 helper_scripts/
 yml_sweeps/
+environments/nuplan_env_requirements.txt
+scripts/count_hparams.py
+
+# MISC
+*.png
+my_results.txt
+todo.md
+scripts/5A_ust_risk_new.py
+scripts/5A_ust_risk_failed.py
+plots/
+local_scripts/

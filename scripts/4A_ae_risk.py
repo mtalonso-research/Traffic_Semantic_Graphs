@@ -18,34 +18,17 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
+import matplotlib.pyplot as plt
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.graph_encoding.data_loaders import get_graph_dataset
-from src.graph_encoding.autoencoder import (
-    HeteroGraphAutoencoder,
-    batched_graph_embeddings,
-    QuantileFeatureQuantizer,
-    feature_loss,
-    edge_loss,
-)
+from src.graph_encoding.autoencoder import (HeteroGraphAutoencoder,batched_graph_embeddings,QuantileFeatureQuantizer,
+                                            feature_loss,edge_loss,calculate_loss_per_key,)
 from src.graph_encoding.risk_prediction import RiskPredictionHead
-from src.experiment_utils import (
-    set_seed,
-    seed_worker,
-    risk_to_class_safe,
-    infer_graph_emb_dim,
-    apply_yaml_overrides,
-    resolve_paths,
-    _format_confusion_matrix,
-    _print_access,
-    _require_dir,
-    _require_file,
-    _make_fallback_run_id,
-    _ensure_dir,
-    classification_metrics_from_cm,
-    log_annotations,
-)
-
+from src.experiment_utils import (set_seed,seed_worker,risk_to_class_safe,infer_graph_emb_dim,apply_yaml_overrides,
+                                  resolve_paths,_format_confusion_matrix,_print_access,_require_dir,_require_file,
+                                  _make_fallback_run_id,_ensure_dir,classification_metrics_from_cm,log_annotations,
+                                  plot_performance_curves,plot_detailed_performance_curves,)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -120,6 +103,7 @@ def run_task(args: argparse.Namespace):
         _require_file(best_model_path, "Checkpoint (--best_model_path) for evaluation")
         run_dir = os.path.dirname(best_model_path)
         ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
+        risk_head_ckpt_path = best_model_path.replace("_best_model.pt", "_risk_head_best_model.pt")
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
         if wandb_run is not None:
             wandb.config.update(
@@ -151,6 +135,7 @@ def run_task(args: argparse.Namespace):
             best_model_path = os.path.join(run_dir, risk_ckpt_name)
 
         ae_ckpt_path = best_model_path.replace("_best_model.pt", "_ae_best_model.pt")
+        risk_head_ckpt_path = best_model_path.replace("_best_model.pt", "_risk_head_best_model.pt")
         eval_results_path = os.path.join(run_dir, "evaluation_results.json")
         if wandb_run is not None:
             wandb.config.update({"run_id": run_id, "run_dir": run_dir}, allow_val_change=True)
@@ -245,9 +230,11 @@ def run_task(args: argparse.Namespace):
         hidden_dim=args.risk_hidden_dim,
         output_dim=output_dim,
         mode=args.prediction_mode,
+        dropout_rate=args.risk_dropout,
     ).to(device)
 
     risk_loss_fn = nn.MSELoss() if args.prediction_mode == "regression" else nn.CrossEntropyLoss()
+    metrics = {}
 
     # ---------------- Optional AE initialization for Stage 1 ----------------
     def maybe_load_ae_init_checkpoint():
@@ -274,10 +261,238 @@ def run_task(args: argparse.Namespace):
         g = batched_graph_embeddings(z_dict, batch, metadata, embed_dim_per_type=args.embed_dim)
         return batch, z_dict, feat_logits, edge_logits, g
 
+    def compute_risk_loss(pred, batch):
+        if args.prediction_mode == "regression":
+            target = batch.y.view(-1, 1).float()
+            loss = risk_loss_fn(pred, target)
+            return loss, target, None
+
+        target = risk_to_class_safe(batch.y)
+        loss = risk_loss_fn(pred, target)
+        pred_cls = torch.argmax(pred, dim=-1)
+        return loss, target, pred_cls
+
+    # ---------------- Joint AE + risk training ----------------
+    best_joint_val_risk = float("inf")
+
+    if args.train_joint:
+        print(f"Joint training: AUTOENCODER + RISK HEAD on {dataset_name}...")
+
+        joint_opt = torch.optim.Adam(
+            [
+                {
+                    "params": encoder.parameters(),
+                    "lr": args.joint_encoder_lr,
+                    "weight_decay": args.joint_weight_decay,
+                },
+                {
+                    "params": prediction_head.parameters(),
+                    "lr": args.joint_head_lr,
+                    "weight_decay": args.joint_weight_decay,
+                },
+            ]
+        )
+
+        train_joint_total = []
+        train_joint_recon = []
+        train_joint_risk = []
+        val_joint_total = []
+        val_joint_recon = []
+        val_joint_risk = []
+        train_joint_acc = []
+        val_joint_acc = []
+
+        for epoch in range(1, args.joint_epochs + 1):
+            encoder.train()
+            prediction_head.train()
+            total = 0.0
+            total_recon = 0.0
+            total_risk = 0.0
+            correct = 0
+            seen = 0
+            n_batches = 0
+
+            for batch in tqdm(train_loader, desc=f"Joint Epoch {epoch:02d} [train]"):
+                joint_opt.zero_grad()
+                batch, z_dict, feat_logits, edge_logits, g = encode_graph_embeddings(batch)
+                pred = prediction_head(g)
+
+                l_feat = feature_loss(feat_logits, batch)
+                l_edge_all = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_train_num_neg)
+                l_edge = l_edge_all["total"]
+                recon_loss = l_feat + l_edge
+
+                risk_loss, target, pred_cls = compute_risk_loss(pred, batch)
+                loss = args.joint_risk_weight * risk_loss + args.joint_recon_weight * recon_loss
+
+                loss.backward()
+                joint_opt.step()
+
+                total += float(loss.item())
+                total_recon += float(recon_loss.item())
+                total_risk += float(risk_loss.item())
+                if args.prediction_mode == "classification":
+                    correct += int((pred_cls == target).sum().item())
+                    seen += int(target.numel())
+                n_batches += 1
+
+            train_total = total / max(n_batches, 1)
+            train_recon = total_recon / max(n_batches, 1)
+            train_risk = total_risk / max(n_batches, 1)
+            train_acc = (correct / max(seen, 1)) if args.prediction_mode == "classification" else None
+
+            encoder.eval()
+            prediction_head.eval()
+            vtotal = 0.0
+            vrecon = 0.0
+            vrisk = 0.0
+            vcorrect = 0
+            vseen = 0
+            vn = 0
+
+            with torch.no_grad():
+                for batch in tqdm(val_loader, desc=f"Joint Epoch {epoch:02d} [val]"):
+                    batch, z_dict, feat_logits, edge_logits, g = encode_graph_embeddings(batch)
+                    pred = prediction_head(g)
+
+                    l_feat = feature_loss(feat_logits, batch)
+                    l_edge_all = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_val_num_neg)
+                    l_edge = l_edge_all["total"]
+                    recon_loss = l_feat + l_edge
+
+                    risk_loss, target, pred_cls = compute_risk_loss(pred, batch)
+                    loss = args.joint_risk_weight * risk_loss + args.joint_recon_weight * recon_loss
+
+                    vtotal += float(loss.item())
+                    vrecon += float(recon_loss.item())
+                    vrisk += float(risk_loss.item())
+                    if args.prediction_mode == "classification":
+                        vcorrect += int((pred_cls == target).sum().item())
+                        vseen += int(target.numel())
+                    vn += 1
+
+            val_total = vtotal / max(vn, 1)
+            val_recon = vrecon / max(vn, 1)
+            val_risk = vrisk / max(vn, 1)
+            val_acc = (vcorrect / max(vseen, 1)) if args.prediction_mode == "classification" else None
+
+            if args.prediction_mode == "classification":
+                print(
+                    f"Joint Epoch {epoch:02d} | train_total={train_total:.4f} | val_total={val_total:.4f} "
+                    f"| train_risk={train_risk:.4f} | val_risk={val_risk:.4f} "
+                    f"| train_recon={train_recon:.4f} | val_recon={val_recon:.4f} "
+                    f"| train_acc={train_acc:.4f} | val_acc={val_acc:.4f}"
+                )
+                train_joint_acc.append(train_acc)
+                val_joint_acc.append(val_acc)
+            else:
+                print(
+                    f"Joint Epoch {epoch:02d} | train_total={train_total:.4f} | val_total={val_total:.4f} "
+                    f"| train_risk={train_risk:.4f} | val_risk={val_risk:.4f} "
+                    f"| train_recon={train_recon:.4f} | val_recon={val_recon:.4f}"
+                )
+
+            train_joint_total.append(train_total)
+            train_joint_recon.append(train_recon)
+            train_joint_risk.append(train_risk)
+            val_joint_total.append(val_total)
+            val_joint_recon.append(val_recon)
+            val_joint_risk.append(val_risk)
+
+            if wandb_run is not None:
+                payload = {
+                    "joint/epoch": epoch,
+                    "joint/train_total": train_total,
+                    "joint/val_total": val_total,
+                    "joint/train_recon": train_recon,
+                    "joint/val_recon": val_recon,
+                    "joint/train_risk": train_risk,
+                    "joint/val_risk": val_risk,
+                }
+                if args.prediction_mode == "classification":
+                    payload.update({"joint/train_acc": train_acc, "joint/val_acc": val_acc})
+                wandb.log(payload)
+
+            if val_risk < best_joint_val_risk:
+                best_joint_val_risk = val_risk
+                _ensure_dir(os.path.dirname(best_model_path))
+                _ensure_dir(os.path.dirname(ae_ckpt_path))
+                _ensure_dir(os.path.dirname(risk_head_ckpt_path))
+                torch.save(
+                    {
+                        "stage": "joint_best",
+                        "encoder_state_dict": encoder.state_dict(),
+                        "prediction_head_state_dict": prediction_head.state_dict(),
+                        "best_val_risk_loss": best_joint_val_risk,
+                        "graph_emb_dim": graph_emb_dim,
+                        "dataset_name": dataset_name,
+                        "args": dict(vars(args)),
+                        "run_id": run_id,
+                        "run_dir": run_dir,
+                    },
+                    best_model_path,
+                )
+                torch.save(
+                    {
+                        "stage": "joint_encoder_best",
+                        "encoder_state_dict": encoder.state_dict(),
+                        "best_val_risk_loss": best_joint_val_risk,
+                        "graph_emb_dim": graph_emb_dim,
+                        "dataset_name": dataset_name,
+                        "args": dict(vars(args)),
+                        "run_id": run_id,
+                        "run_dir": run_dir,
+                    },
+                    ae_ckpt_path,
+                )
+                torch.save(
+                    {
+                        "stage": "joint_risk_head_best",
+                        "prediction_head_state_dict": prediction_head.state_dict(),
+                        "best_val_risk_loss": best_joint_val_risk,
+                        "graph_emb_dim": graph_emb_dim,
+                        "dataset_name": dataset_name,
+                        "args": dict(vars(args)),
+                        "run_id": run_id,
+                        "run_dir": run_dir,
+                    },
+                    risk_head_ckpt_path,
+                )
+                print(f"  -> New best joint model saved to {best_model_path}")
+                print(f"  -> Encoder checkpoint saved to {ae_ckpt_path}")
+                print(f"  -> Risk head checkpoint saved to {risk_head_ckpt_path}")
+
+        _ensure_dir(os.path.dirname(best_model_path))
+        plot_performance_curves(
+            title="Joint: Total Loss",
+            train_loss=train_joint_total,
+            val_loss=val_joint_total,
+            save_path=best_model_path[0:-3] + "_joint_total_loss.png"
+        )
+        plot_performance_curves(
+            title="Joint: Reconstruction Loss",
+            train_loss=train_joint_recon,
+            val_loss=val_joint_recon,
+            save_path=best_model_path[0:-3] + "_joint_recon_loss.png"
+        )
+        plot_performance_curves(
+            title="Joint: Risk Loss",
+            train_loss=train_joint_risk,
+            val_loss=val_joint_risk,
+            save_path=best_model_path[0:-3] + "_joint_risk_loss.png"
+        )
+        if args.prediction_mode == "classification":
+            plot_performance_curves(
+                title="Joint: Classification Accuracy",
+                train_loss=train_joint_acc,
+                val_loss=val_joint_acc,
+                save_path=best_model_path[0:-3] + "_joint_classification_acc.png"
+            )
+
     # ---------------- Stage 1: train AE (reconstruction) ----------------
     best_ae_val = float("inf")
 
-    if args.train_autoencoder:
+    if args.train_autoencoder and not args.train_joint:
         print(f"Stage 1/2: Training AUTOENCODER (reconstruction only) on {dataset_name}...")
 
         ae_opt = torch.optim.Adam(
@@ -286,27 +501,50 @@ def run_task(args: argparse.Namespace):
             weight_decay=args.ae_weight_decay,
         )
 
+        train_recons = []
+        train_feature_losses = []
+        train_edge_losses = []
+
+        val_recons = []
+        val_feature_losses = []
+        val_edge_losses = []
+
+        # losses per edge type
+        train_losses_per_key = {("ego", "to", "ego"): [], ("ego", "to", "pedestrian"): [], ("ego", "to", "vehicle"): [], ("ego", "to", "environment"): []}
+        val_losses_per_key = {("ego", "to", "ego"): [], ("ego", "to", "pedestrian"): [], ("ego", "to", "vehicle"): [], ("ego", "to", "environment"): []}
         for epoch in range(1, args.ae_epochs + 1):
             encoder.train()
             total = 0.0
             n_batches = 0
+            train_feature_loss = 0.0
+            train_edge_loss = 0.0
 
+            # loss per edge type
+            train_loss_per_key = {("ego", "to", "ego"): 0.0, ("ego", "to", "pedestrian"): 0.0, ("ego", "to", "vehicle"): 0.0, ("ego", "to", "environment"): 0.0}
             for batch in tqdm(train_loader, desc=f"AE Epoch {epoch:02d} [train]"):
                 ae_opt.zero_grad()
                 batch, z_dict, feat_logits, edge_logits, _g = encode_graph_embeddings(batch)
 
                 # Reconstruction loss = feature + edge
                 l_feat = feature_loss(feat_logits, batch)
-                l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders)
+                l_edge_all = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_train_num_neg)
+                l_edge = l_edge_all["total"]
                 loss = l_feat + l_edge
 
                 loss.backward()
                 ae_opt.step()
 
                 total += float(loss.item())
+                train_feature_loss += float(l_feat.item())
+                train_edge_loss += float(l_edge.item())
+                calculate_loss_per_key(train_loss_per_key, l_edge_all)
                 n_batches += 1
 
             train_loss = total / max(n_batches, 1)
+            train_feat = train_feature_loss / max(n_batches, 1)
+            train_edge = train_edge_loss / max(n_batches, 1)
+            train_loss_per_key = {k: v / max(n_batches, 1) for k, v in train_loss_per_key.items()}
+
 
             # val
             encoder.eval()
@@ -315,26 +553,43 @@ def run_task(args: argparse.Namespace):
             vedge = 0.0
             vn = 0
 
+            # loss per edge type
+            val_loss_per_key = {("ego", "to", "ego"): 0.0, ("ego", "to", "pedestrian"): 0.0, ("ego", "to", "vehicle"): 0.0, ("ego", "to", "environment"): 0.0}
             with torch.no_grad():
                 for batch in tqdm(val_loader, desc=f"AE Epoch {epoch:02d} [val]"):
                     batch, z_dict, feat_logits, edge_logits, _g = encode_graph_embeddings(batch)
                     l_feat = feature_loss(feat_logits, batch)
-                    l_edge = edge_loss(edge_logits, z_dict, encoder.edge_decoders)
+                    l_edge_all = edge_loss(edge_logits, z_dict, encoder.edge_decoders, num_neg=args.ae_val_num_neg)
+                    l_edge = l_edge_all["total"]
                     loss = l_feat + l_edge
 
                     vtotal += float(loss.item())
                     vfeat += float(l_feat.item())
                     vedge += float(l_edge.item())
+                    calculate_loss_per_key(val_loss_per_key, l_edge_all)
                     vn += 1
 
             val_loss = vtotal / max(vn, 1)
             val_feat = vfeat / max(vn, 1)
             val_edge = vedge / max(vn, 1)
+            val_loss_per_key = {k: v / max(vn, 1) for k, v in val_loss_per_key.items()}
 
             print(
                 f"AE Epoch {epoch:02d} | train_recon={train_loss:.4f} | "
                 f"val_recon={val_loss:.4f} | val_feat={val_feat:.4f} | val_edge={val_edge:.4f}"
             )
+
+            train_recons.append(train_loss)
+            train_feature_losses.append(train_feat)
+            train_edge_losses.append(train_edge)
+            for key, value in train_loss_per_key.items():
+                train_losses_per_key[key].append(value)
+
+            val_recons.append(val_loss)
+            val_feature_losses.append(val_feat)
+            val_edge_losses.append(val_edge)
+            for key, value in val_loss_per_key.items():
+                val_losses_per_key[key].append(value)
 
             if wandb_run is not None:
                 wandb.log(
@@ -364,6 +619,29 @@ def run_task(args: argparse.Namespace):
                     ae_ckpt_path,
                 )
                 print(f"  -> New best AE saved to {ae_ckpt_path}")
+        _ensure_dir(os.path.dirname(ae_ckpt_path))
+
+        plot_performance_curves(
+            title="AE: Total Reconstruction Loss", 
+            train_loss=train_recons, val_loss=val_recons, 
+            save_path=ae_ckpt_path[0:-3]+"_ae_total_loss.png"
+        )
+        plot_performance_curves(
+            title="AE: Feature Reconstruction Loss",
+            train_loss=train_feature_losses, val_loss=val_feature_losses,
+            save_path=ae_ckpt_path[0:-3]+"_ae_feature_loss.png"
+        )
+        plot_performance_curves(
+            title="AE: Edge Reconstruction Loss",
+            train_loss=train_edge_losses, val_loss=val_edge_losses,
+            save_path=ae_ckpt_path[0:-3]+"_ae_edge_loss.png"
+        )
+        plot_detailed_performance_curves(
+            title="AE: Edge Reconstruction Loss per Edge Type",
+            train_metrics=train_losses_per_key,
+            val_metrics=val_losses_per_key,
+            save_path=ae_ckpt_path[0:-3]+"_ae_edge_loss_per_type.png"
+        )
 
     # Optionally load best AE ckpt before risk training/eval
     if args.load_best_ae:
@@ -381,7 +659,7 @@ def run_task(args: argparse.Namespace):
     # ---------------- Stage 2: train risk head (encoder frozen) ----------------
     best_val_loss = float("inf")
 
-    if args.train_risk:
+    if args.train_risk and not args.train_joint:
         print(f"Stage 2/2: Training RISK HEAD (encoder frozen) on {dataset_name}...")
 
         risk_opt = torch.optim.Adam(
@@ -390,6 +668,10 @@ def run_task(args: argparse.Namespace):
             weight_decay=args.risk_weight_decay,
         )
 
+        train_risk_loss = []
+        val_risk_loss = []
+        train_risk_acc = []
+        val_risk_acc = []
         for epoch in range(1, args.risk_epochs + 1):
             prediction_head.train()
             total = 0.0
@@ -447,8 +729,12 @@ def run_task(args: argparse.Namespace):
                     f"Risk Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f} "
                     f"| train_acc={train_acc:.4f} | val_acc={val_acc:.4f}"
                 )
+                train_risk_acc.append(train_acc)
+                val_risk_acc.append(val_acc)
             else:
                 print(f"Risk Epoch {epoch:02d} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
+            train_risk_loss.append(train_loss)
+            val_risk_loss.append(val_loss)
 
             if wandb_run is not None:
                 payload = {"risk/epoch": epoch, "risk/train_loss": train_loss, "risk/val_loss": val_loss}
@@ -474,6 +760,21 @@ def run_task(args: argparse.Namespace):
                     best_model_path,
                 )
                 print(f"  -> New best 4Ba model saved to {best_model_path}")
+        _ensure_dir(os.path.dirname(ae_ckpt_path))
+
+        plot_performance_curves(
+            title="RM: Total Loss",
+            train_loss=train_risk_loss,
+            val_loss=val_risk_loss,
+            save_path=ae_ckpt_path[0:-3]+"_rm_total_loss.png"
+        )
+        if args.prediction_mode == "classification":
+            plot_performance_curves(
+                title="RM: Classification Accuracy",
+                train_loss=train_risk_acc,
+                val_loss=val_risk_acc,
+                save_path=ae_ckpt_path[0:-3]+"_rm_classification_acc.png"
+            )
 
     # ---------------- EVALUATE ----------------
     if args.evaluate:
@@ -662,23 +963,25 @@ if __name__ == "__main__":
     parser.add_argument("--ae_epochs", type=int, default=10)
     parser.add_argument("--ae_lr", type=float, default=1e-4)
     parser.add_argument("--ae_weight_decay", type=float, default=1e-5)
-    parser.add_argument(
-        "--load_best_ae",
-        action="store_true",
-        help="Load *_ae_best_model.pt before training risk/eval",
-    )
-    parser.add_argument(
-        "--init_ae_checkpoint",
-        type=str,
-        default=None,
-        help="Optional checkpoint to initialize the autoencoder from before Stage 1 training.",
-    )
+    parser.add_argument("--ae_train_num_neg", type=int, default=1, help="Negative samples per positive edge during AE training.")
+    parser.add_argument("--ae_val_num_neg", type=int, default=4, help="Negative samples per positive edge during AE validation (higher reduces variance).")
+    parser.add_argument("--load_best_ae", action="store_true", help="Load *_ae_best_model.pt before training risk/eval")
+
+    # Joint training
+    parser.add_argument("--train_joint", action="store_true", help="Train encoder and risk head jointly with a combined reconstruction and prediction loss.")
+    parser.add_argument("--joint_epochs", type=int, default=10)
+    parser.add_argument("--joint_encoder_lr", type=float, default=1e-4)
+    parser.add_argument("--joint_head_lr", type=float, default=1e-4)
+    parser.add_argument("--joint_weight_decay", type=float, default=1e-5)
+    parser.add_argument("--joint_recon_weight", type=float, default=1.0, help="Weight for AE reconstruction loss during joint training.")
+    parser.add_argument("--joint_risk_weight", type=float, default=1.0, help="Weight for risk prediction loss during joint training.")
 
     # Stage 2: risk training
     parser.add_argument("--train_risk", action="store_true")
     parser.add_argument("--risk_epochs", type=int, default=10)
     parser.add_argument("--risk_lr", type=float, default=1e-4)
     parser.add_argument("--risk_weight_decay", type=float, default=1e-5)
+    parser.add_argument("--risk_dropout", type=float, default=0.5, help="Dropout rate for the risk prediction head.")
 
     # Eval
     parser.add_argument("--evaluate", action="store_true")
@@ -707,4 +1010,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     args = apply_yaml_overrides(parser, args)
+    print(f"Devices available: {torch.cuda.device_count()} | Using device: {device}")
     run_task(args)
