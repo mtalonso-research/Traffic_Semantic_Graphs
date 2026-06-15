@@ -1,3 +1,6 @@
+"""
+    python -m scripts.plot_city_features
+"""
 import argparse
 import csv
 import json
