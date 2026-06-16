@@ -237,7 +237,8 @@ class CityLabelStream:
                 (
                     "========== City UST evaluation results ==========\n"
                     f"test_samples/{source_city}: {source_count}\n"
-                    f"test_samples/{target_city}: {target_count}"
+                    f"test_samples/{target_city}: {target_count}\n"
+                    f"test_samples/overall: {source_count + target_count}"
                 ),
             ),
             (f"[eval:noisy_{VIEW_TARGET_NOISE_LEVEL}]", f"[eval:{target_city}]"),

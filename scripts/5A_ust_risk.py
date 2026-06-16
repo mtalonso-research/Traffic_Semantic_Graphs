@@ -1135,13 +1135,30 @@ def run_task(args: argparse.Namespace):
         metrics.update({f"eval/{k}": v for k, v in clean_metrics.items()})
         metrics.update({f"eval/{k}": v for k, v in noisy_metrics.items()})
 
+        if args.prediction_mode == "classification":
+            clean_cm_arr = np.array(clean_cm)
+            noisy_cm_arr = np.array(noisy_cm)
+            overall_cm = clean_cm_arr + noisy_cm_arr
+            clean_count = int(clean_cm_arr.sum())
+            noisy_count = int(noisy_cm_arr.sum())
+            overall_count = int(overall_cm.sum())
+            overall_correct = int(np.trace(overall_cm))
+            metrics["eval/overall/test_samples"] = overall_count
+            metrics["eval/overall/accuracy"] = overall_correct / max(overall_count, 1)
+            metrics["eval/overall/loss"] = (
+                (clean_metrics["clean/loss"] * clean_count) + (noisy_metrics["noisy/loss"] * noisy_count)
+            ) / max(overall_count, 1)
+
         print("\n========== 4Bb FIXED evaluation results ==========")
         for k, v in sorted(metrics.items()):
             if isinstance(v, list):
                 print(f"{k}: {v}")
             else:
                 try:
-                    print(f"{k}: {float(v):.4f}")
+                    if k.endswith("test_samples"):
+                        print(f"{k}: {int(v)}")
+                    else:
+                        print(f"{k}: {float(v):.4f}")
                 except Exception:
                     print(f"{k}: {v}")
         if args.prediction_mode == "classification":
