@@ -9,6 +9,7 @@ UST_EPOCHS=${UST_EPOCHS:-80}
 ANCHOR=${ANCHOR:-5}
 BATCH_SIZE=${BATCH_SIZE:-16}
 NUM_WORKERS=${NUM_WORKERS:-0}
+PATIENCE=${PATIENCE:-15}
 TEST_SIZE=${TEST_SIZE:-100}
 SPLIT_SEED=${SPLIT_SEED:-$SEED}
 
@@ -61,7 +62,8 @@ if [ "$RUN_BASELINES" = "1" ]; then
 	--ae_epochs "$AE_EPOCHS" \
 	--risk_epochs "$RISK_EPOCHS" \
 	--batch_size "$BATCH_SIZE" \
-	--num_workers "$NUM_WORKERS"
+	--num_workers "$NUM_WORKERS" \
+	--patience "$PATIENCE"
 
 	echo -e "\nRunning BaselineB target-city training (${TARGET_CITY})"
 	python -m scripts.city_train baseline \
@@ -77,7 +79,8 @@ if [ "$RUN_BASELINES" = "1" ]; then
 	--ae_epochs "$AE_EPOCHS" \
 	--risk_epochs "$RISK_EPOCHS" \
 	--batch_size "$BATCH_SIZE" \
-	--num_workers "$NUM_WORKERS"
+	--num_workers "$NUM_WORKERS" \
+	--patience "$PATIENCE"
 fi
 
 if [ "$RUN_UST" = "1" ]; then
@@ -98,6 +101,7 @@ if [ "$RUN_UST" = "1" ]; then
 	--embed_dim "$EMB_DIM" \
 	--batch_size "$BATCH_SIZE" \
 	--num_workers "$NUM_WORKERS" \
+	--patience "$PATIENCE" \
 	--best_model_path "$UST_MODEL"
 fi
 
@@ -113,7 +117,8 @@ if [ "$RUN_EVAL" = "1" ]; then
 	--evaluate \
 	--best_model_path "$SOURCE_MODEL" \
 	--batch_size "$BATCH_SIZE" \
-	--num_workers "$NUM_WORKERS"
+	--num_workers "$NUM_WORKERS" \
+	--patience "$PATIENCE"
 
 	echo -e "\nEvaluating BaselineB target-city model (${TARGET_CITY})"
 	python -m scripts.city_train baseline \
@@ -124,7 +129,8 @@ if [ "$RUN_EVAL" = "1" ]; then
 	--evaluate \
 	--best_model_path "$TARGET_MODEL" \
 	--batch_size "$BATCH_SIZE" \
-	--num_workers "$NUM_WORKERS"
+	--num_workers "$NUM_WORKERS" \
+	--patience "$PATIENCE"
 
 	echo -e "\nEvaluating City UST model (${SOURCE_CITY} -> ${TARGET_CITY})"
 	python -m scripts.city_train ust \
@@ -135,5 +141,6 @@ if [ "$RUN_EVAL" = "1" ]; then
 	--evaluate \
 	--best_model_path "$UST_MODEL" \
 	--batch_size "$BATCH_SIZE" \
-	--num_workers "$NUM_WORKERS"
+	--num_workers "$NUM_WORKERS" \
+	--patience "$PATIENCE"
 fi

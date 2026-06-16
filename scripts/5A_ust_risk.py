@@ -595,6 +595,7 @@ def run_task(args: argparse.Namespace):
 
         def train_one_ae(encoder, encode_fn, train_loader, val_loader, ckpt_path: str, label: str):
             best_val = float("inf")
+            epochs_without_improvement = 0
             opt = torch.optim.Adam(encoder.parameters(), lr=args.ae_lr, weight_decay=args.ae_weight_decay)
 
             for epoch in range(1, args.ae_epochs + 1):
@@ -641,6 +642,7 @@ def run_task(args: argparse.Namespace):
 
                 if val_loss < best_val:
                     best_val = val_loss
+                    epochs_without_improvement = 0
                     _ensure_dir(os.path.dirname(ckpt_path))
                     torch.save(
                         {
@@ -656,6 +658,14 @@ def run_task(args: argparse.Namespace):
                         ckpt_path,
                     )
                     print(f"  -> New best AE[{label}] saved to {ckpt_path}")
+                else:
+                    epochs_without_improvement += 1
+                    if args.patience > 0 and epochs_without_improvement >= args.patience:
+                        print(
+                            f"[early-stop] AE[{label}] training stopped after {epoch} epochs "
+                            f"(no val_recon improvement for {args.patience} epochs)."
+                        )
+                        break
 
         train_one_ae(
             encoder_clean,
@@ -738,6 +748,7 @@ def run_task(args: argparse.Namespace):
 
     if args.train_stage2:
         print("Stage 2: training with CLEAN as canonical; updating ONLY the intended modules per loop...")
+        stage2_epochs_without_improvement = 0
 
         risk_params = list(risk_head.parameters())
         if proj_clean is not None:
@@ -974,6 +985,7 @@ def run_task(args: argparse.Namespace):
 
             if val_risk < best_val_risk:
                 best_val_risk = val_risk
+                stage2_epochs_without_improvement = 0
                 _ensure_dir(os.path.dirname(main_ckpt_path))
                 ckpt_out = {
                     "stage": "align_proj_noisy_risk_best_FIXED",
@@ -997,6 +1009,14 @@ def run_task(args: argparse.Namespace):
 
                 torch.save(ckpt_out, main_ckpt_path)
                 print(f"  -> New best FIXED model saved to {main_ckpt_path}")
+            else:
+                stage2_epochs_without_improvement += 1
+                if args.patience > 0 and stage2_epochs_without_improvement >= args.patience:
+                    print(
+                        f"[early-stop] Stage2 training stopped after {epoch} epochs "
+                        f"(no val_risk improvement for {args.patience} epochs)."
+                    )
+                    break
 
     # ---------------- EVALUATE ----------------
     metrics=None
@@ -1272,6 +1292,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--val_fraction", type=float, default=0.2)
+    parser.add_argument("--patience", type=int, default=15, help="Early-stopping patience in validation epochs. Use <=0 to disable.")
 
     # Stage 1: AE training
     parser.add_argument("--train_autoencoders", action="store_true")

@@ -31,6 +31,7 @@ BASELINE_DEFAULTS: Dict[str, Any] = {
     "num_workers": 4,
     "val_fraction": 0.2,
     "quant_bins": 32,
+    "patience": 15,
     "train_autoencoder": False,
     "ae_epochs": 10,
     "ae_lr": 1e-4,
@@ -95,6 +96,7 @@ UST_DEFAULTS: Dict[str, Any] = {
     "batch_size": 8,
     "num_workers": 4,
     "val_fraction": 0.2,
+    "patience": 15,
     "train_autoencoders": False,
     "ae_epochs": 10,
     "ae_lr": 1e-4,
@@ -323,6 +325,7 @@ def add_shared_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--val_fraction", type=float, default=0.2)
+    parser.add_argument("--patience", type=int, default=15, help="Early-stopping patience in validation epochs. Use <=0 to disable.")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--sweep", action="store_true")
     parser.add_argument("--save_annotations", action="store_true")
