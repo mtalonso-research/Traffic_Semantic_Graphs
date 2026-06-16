@@ -7,6 +7,7 @@ AE_EPOCHS=${AE_EPOCHS:-500}
 RISK_EPOCHS=${RISK_EPOCHS:-300}
 UST_EPOCHS=${UST_EPOCHS:-300}
 ANCHOR=${ANCHOR:-10}
+ANCHOR_STRATEGY=${ANCHOR_STRATEGY:-nn} # "random", "top_risk", "bottom_risk", "stratified", "nn"
 BATCH_SIZE=${BATCH_SIZE:-64}
 NUM_WORKERS=${NUM_WORKERS:-0}
 PATIENCE=${PATIENCE:-15}
@@ -90,6 +91,7 @@ if [ "$RUN_UST" = "1" ]; then
 	--target_city "$TARGET_CITY" \
 	--city_view_root "$CITY_VIEW" \
 	--anchor_pct "$ANCHOR" \
+	--anchor_strategy "$ANCHOR_STRATEGY" \
 	--load_best_ae_clean \
 	--ae_clean_ckpt_path "$SOURCE_AE_MODEL" \
 	--load_best_ae_noisy \
