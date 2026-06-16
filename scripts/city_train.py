@@ -1,6 +1,8 @@
 import argparse
 import importlib
+import sys
 from argparse import Namespace
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Dict
 
@@ -207,6 +209,61 @@ def patch_legacy_annotations(module, enabled: bool) -> None:
     module.log_annotations = skip_log_annotations
 
 
+class CityLabelStream:
+    def __init__(self, stream, source_city: str, target_city: str):
+        self.stream = stream
+        self.replacements = [
+            (
+                f"========== noisy_{VIEW_TARGET_NOISE_LEVEL} evaluation results ==========",
+                f"========== {target_city} evaluation results ==========",
+            ),
+            ("========== clean evaluation results ==========", f"========== {source_city} evaluation results =========="),
+            (f"[eval:noisy_{VIEW_TARGET_NOISE_LEVEL}]", f"[eval:{target_city}]"),
+            ("[eval:noisy]", f"[eval:{target_city}]"),
+            ("[eval:clean]", f"[eval:{source_city}]"),
+            (f" on noisy_{VIEW_TARGET_NOISE_LEVEL}", f" on {target_city}"),
+            (" on clean", f" on {source_city}"),
+            (f"noisy_{VIEW_TARGET_NOISE_LEVEL} evaluation avg loss", f"{target_city} evaluation avg loss"),
+            ("clean evaluation avg loss", f"{source_city} evaluation avg loss"),
+            (
+                f"clean=clean, noisy=noisy_{VIEW_TARGET_NOISE_LEVEL}",
+                f"source={source_city}, target={target_city}",
+            ),
+            ("CLEAN EVAL", f"{source_city.upper()} EVAL"),
+            ("NOISY EVAL", f"{target_city.upper()} EVAL"),
+            ("eval/clean/", f"eval/{source_city}/"),
+            ("eval/noisy/", f"eval/{target_city}/"),
+            ("CLEAN confusion matrix", f"{source_city.upper()} confusion matrix"),
+            ("NOISY confusion matrix", f"{target_city.upper()} confusion matrix"),
+        ]
+
+    def write(self, text: str):
+        for old, new in self.replacements:
+            text = text.replace(old, new)
+        return self.stream.write(text)
+
+    def flush(self):
+        return self.stream.flush()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+@contextmanager
+def city_eval_labels(enabled: bool, source_city: str, target_city: str):
+    if not enabled:
+        yield
+        return
+
+    stdout = CityLabelStream(sys.stdout, source_city, target_city)
+    stderr = CityLabelStream(sys.stderr, source_city, target_city)
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        yield
+
+
 def add_city_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source_city", type=str, default="singapore")
     parser.add_argument("--target_city", type=str, default="boston")
@@ -346,7 +403,13 @@ def run_baseline(args: Namespace) -> None:
     )
     module = importlib.import_module("scripts.4A_ae_risk")
     patch_legacy_annotations(module, enabled=not args.write_legacy_annotations)
-    module.run_task(legacy_args)
+    if legacy_args.evaluate:
+        print(
+            f"[city-train] Evaluation labels: clean -> {source_city}; "
+            f"noisy_{VIEW_TARGET_NOISE_LEVEL}/noisy -> {target_city}"
+        )
+    with city_eval_labels(legacy_args.evaluate, source_city, target_city):
+        module.run_task(legacy_args)
 
 
 def run_ust(args: Namespace) -> None:
@@ -382,7 +445,13 @@ def run_ust(args: Namespace) -> None:
     )
     module = importlib.import_module("scripts.5A_ust_risk")
     patch_legacy_annotations(module, enabled=not args.write_legacy_annotations)
-    module.run_task(legacy_args)
+    if legacy_args.evaluate:
+        print(
+            f"[city-train] Evaluation labels: clean -> {source_city}; "
+            f"noisy_{VIEW_TARGET_NOISE_LEVEL}/noisy -> {target_city}"
+        )
+    with city_eval_labels(legacy_args.evaluate, source_city, target_city):
+        module.run_task(legacy_args)
 
 
 def build_parser() -> argparse.ArgumentParser:
