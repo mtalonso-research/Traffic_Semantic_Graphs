@@ -190,6 +190,15 @@ def require_city_view(view_root: Path) -> None:
         )
 
 
+def city_eval_sample_counts(view_root: Path, source_city: str, target_city: str) -> Dict[str, int]:
+    source_graphs = view_root / "evaluation_data" / "clean" / "graphs"
+    target_graphs = view_root / "evaluation_data" / f"noisy_{VIEW_TARGET_NOISE_LEVEL}" / "graphs"
+    return {
+        source_city: len(list(source_graphs.glob("*.json"))),
+        target_city: len(list(target_graphs.glob("*.json"))),
+    }
+
+
 def namespace_from_defaults(defaults: Dict[str, Any], args: Namespace, updates: Dict[str, Any]) -> Namespace:
     values = dict(defaults)
     for key in values:
@@ -210,14 +219,27 @@ def patch_legacy_annotations(module, enabled: bool) -> None:
 
 
 class CityLabelStream:
-    def __init__(self, stream, source_city: str, target_city: str):
+    def __init__(self, stream, source_city: str, target_city: str, eval_counts: Dict[str, int]):
         self.stream = stream
+        source_count = eval_counts.get(source_city, 0)
+        target_count = eval_counts.get(target_city, 0)
         self.replacements = [
             (
                 f"========== noisy_{VIEW_TARGET_NOISE_LEVEL} evaluation results ==========",
-                f"========== {target_city} evaluation results ==========",
+                f"========== {target_city} evaluation results ==========\ntest_samples: {target_count}",
             ),
-            ("========== clean evaluation results ==========", f"========== {source_city} evaluation results =========="),
+            (
+                "========== clean evaluation results ==========",
+                f"========== {source_city} evaluation results ==========\ntest_samples: {source_count}",
+            ),
+            (
+                "========== 4Bb FIXED evaluation results ==========",
+                (
+                    "========== City UST evaluation results ==========\n"
+                    f"test_samples/{source_city}: {source_count}\n"
+                    f"test_samples/{target_city}: {target_count}"
+                ),
+            ),
             (f"[eval:noisy_{VIEW_TARGET_NOISE_LEVEL}]", f"[eval:{target_city}]"),
             ("[eval:noisy]", f"[eval:{target_city}]"),
             ("[eval:clean]", f"[eval:{source_city}]"),
@@ -253,13 +275,13 @@ class CityLabelStream:
 
 
 @contextmanager
-def city_eval_labels(enabled: bool, source_city: str, target_city: str):
+def city_eval_labels(enabled: bool, source_city: str, target_city: str, eval_counts: Dict[str, int]):
     if not enabled:
         yield
         return
 
-    stdout = CityLabelStream(sys.stdout, source_city, target_city)
-    stderr = CityLabelStream(sys.stderr, source_city, target_city)
+    stdout = CityLabelStream(sys.stdout, source_city, target_city, eval_counts)
+    stderr = CityLabelStream(sys.stderr, source_city, target_city, eval_counts)
     with redirect_stdout(stdout), redirect_stderr(stderr):
         yield
 
@@ -403,12 +425,17 @@ def run_baseline(args: Namespace) -> None:
     )
     module = importlib.import_module("scripts.4A_ae_risk")
     patch_legacy_annotations(module, enabled=not args.write_legacy_annotations)
+    eval_counts = city_eval_sample_counts(view_root, source_city, target_city) if legacy_args.evaluate else {}
     if legacy_args.evaluate:
         print(
             f"[city-train] Evaluation labels: clean -> {source_city}; "
             f"noisy_{VIEW_TARGET_NOISE_LEVEL}/noisy -> {target_city}"
         )
-    with city_eval_labels(legacy_args.evaluate, source_city, target_city):
+        print(
+            f"[city-train] Test samples: {source_city}={eval_counts[source_city]}, "
+            f"{target_city}={eval_counts[target_city]}"
+        )
+    with city_eval_labels(legacy_args.evaluate, source_city, target_city, eval_counts):
         module.run_task(legacy_args)
 
 
@@ -445,12 +472,17 @@ def run_ust(args: Namespace) -> None:
     )
     module = importlib.import_module("scripts.5A_ust_risk")
     patch_legacy_annotations(module, enabled=not args.write_legacy_annotations)
+    eval_counts = city_eval_sample_counts(view_root, source_city, target_city) if legacy_args.evaluate else {}
     if legacy_args.evaluate:
         print(
             f"[city-train] Evaluation labels: clean -> {source_city}; "
             f"noisy_{VIEW_TARGET_NOISE_LEVEL}/noisy -> {target_city}"
         )
-    with city_eval_labels(legacy_args.evaluate, source_city, target_city):
+        print(
+            f"[city-train] Test samples: {source_city}={eval_counts[source_city]}, "
+            f"{target_city}={eval_counts[target_city]}"
+        )
+    with city_eval_labels(legacy_args.evaluate, source_city, target_city, eval_counts):
         module.run_task(legacy_args)
 
 
