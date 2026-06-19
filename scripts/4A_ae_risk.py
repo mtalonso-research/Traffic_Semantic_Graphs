@@ -277,6 +277,7 @@ def run_task(args: argparse.Namespace):
 
     if args.train_joint:
         print(f"Joint training: AUTOENCODER + RISK HEAD on {dataset_name}...")
+        joint_epochs_without_improvement = 0
 
         joint_opt = torch.optim.Adam(
             [
@@ -415,6 +416,7 @@ def run_task(args: argparse.Namespace):
 
             if val_risk < best_joint_val_risk:
                 best_joint_val_risk = val_risk
+                joint_epochs_without_improvement = 0
                 _ensure_dir(os.path.dirname(best_model_path))
                 _ensure_dir(os.path.dirname(ae_ckpt_path))
                 _ensure_dir(os.path.dirname(risk_head_ckpt_path))
@@ -461,6 +463,14 @@ def run_task(args: argparse.Namespace):
                 print(f"  -> New best joint model saved to {best_model_path}")
                 print(f"  -> Encoder checkpoint saved to {ae_ckpt_path}")
                 print(f"  -> Risk head checkpoint saved to {risk_head_ckpt_path}")
+            else:
+                joint_epochs_without_improvement += 1
+                if args.patience > 0 and joint_epochs_without_improvement >= args.patience:
+                    print(
+                        f"[early-stop] Joint training stopped after {epoch} epochs "
+                        f"(no val_risk improvement for {args.patience} epochs)."
+                    )
+                    break
 
         _ensure_dir(os.path.dirname(best_model_path))
         plot_performance_curves(
@@ -494,6 +504,7 @@ def run_task(args: argparse.Namespace):
 
     if args.train_autoencoder and not args.train_joint:
         print(f"Stage 1/2: Training AUTOENCODER (reconstruction only) on {dataset_name}...")
+        ae_epochs_without_improvement = 0
 
         ae_opt = torch.optim.Adam(
             encoder.parameters(),
@@ -604,6 +615,7 @@ def run_task(args: argparse.Namespace):
 
             if val_loss < best_ae_val:
                 best_ae_val = val_loss
+                ae_epochs_without_improvement = 0
                 _ensure_dir(os.path.dirname(ae_ckpt_path))
                 torch.save(
                     {
@@ -619,6 +631,14 @@ def run_task(args: argparse.Namespace):
                     ae_ckpt_path,
                 )
                 print(f"  -> New best AE saved to {ae_ckpt_path}")
+            else:
+                ae_epochs_without_improvement += 1
+                if args.patience > 0 and ae_epochs_without_improvement >= args.patience:
+                    print(
+                        f"[early-stop] AE training stopped after {epoch} epochs "
+                        f"(no val_recon improvement for {args.patience} epochs)."
+                    )
+                    break
         _ensure_dir(os.path.dirname(ae_ckpt_path))
 
         plot_performance_curves(
@@ -661,6 +681,7 @@ def run_task(args: argparse.Namespace):
 
     if args.train_risk and not args.train_joint:
         print(f"Stage 2/2: Training RISK HEAD (encoder frozen) on {dataset_name}...")
+        risk_epochs_without_improvement = 0
 
         risk_opt = torch.optim.Adam(
             prediction_head.parameters(),
@@ -744,6 +765,7 @@ def run_task(args: argparse.Namespace):
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                risk_epochs_without_improvement = 0
                 _ensure_dir(os.path.dirname(best_model_path))
                 torch.save(
                     {
@@ -760,6 +782,14 @@ def run_task(args: argparse.Namespace):
                     best_model_path,
                 )
                 print(f"  -> New best 4Ba model saved to {best_model_path}")
+            else:
+                risk_epochs_without_improvement += 1
+                if args.patience > 0 and risk_epochs_without_improvement >= args.patience:
+                    print(
+                        f"[early-stop] Risk-head training stopped after {epoch} epochs "
+                        f"(no val_loss improvement for {args.patience} epochs)."
+                    )
+                    break
         _ensure_dir(os.path.dirname(ae_ckpt_path))
 
         plot_performance_curves(
@@ -957,6 +987,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--val_fraction", type=float, default=0.2)
     parser.add_argument("--quant_bins", type=int, default=32)
+    parser.add_argument("--patience", type=int, default=15, help="Early-stopping patience in validation epochs. Use <=0 to disable.")
 
     # Stage 1: AE training
     parser.add_argument("--train_autoencoder", action="store_true")

@@ -95,8 +95,6 @@ TRAFFIC_SEMANTIC_GRAPHS/
 │   └── experiment_utils.py          # Training and eval helpers
 └── README.md                        # This file
 ```
-<<<<<<< HEAD
-=======
 **Note:** The actual data files are not included in the repository due to storage limitations.
 ## How to run
 1. Download the dataset from [Google Drive](https://drive.google.com/file/d/1PRaol3vGN9_hElHU948hU_PghBrHng5c/view?usp=sharing)
@@ -104,7 +102,6 @@ TRAFFIC_SEMANTIC_GRAPHS/
 3. Setup `nuplan` python environment
 3. Run `bash run.sh` 
 For more control follow the steps below
->>>>>>> 0b6248f (docs: added datasaet + instructions how to run a code)
 
 ## Phase 1: Data Processing
 
