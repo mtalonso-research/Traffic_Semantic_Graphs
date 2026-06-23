@@ -26,7 +26,7 @@ def process_graphs(data_dir, output_dir, noise_level):
         os.makedirs(output_dir)
 
     for filename in tqdm(os.listdir(data_dir)):
-        if filename.endswith('.json'):
+        if filename.endswith('_graph.json'):
             filepath = os.path.join(data_dir, filename)
             with open(filepath, 'r') as f:
                 graph = json.load(f)
