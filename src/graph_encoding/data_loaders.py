@@ -53,7 +53,7 @@ class BaseGraphJsonDataset(Dataset):
                 self.risk_scores = json.load(f)
 
         self.graph_filenames = sorted(
-            [f for f in os.listdir(root_dir) if f.endswith(".json")],
+            [f for f in os.listdir(root_dir) if f.endswith("_graph.json")],
             key=lambda f: int(f.split("_")[0]) if f.split("_")[0].isdigit() else f
         )
 
